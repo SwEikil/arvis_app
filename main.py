@@ -315,6 +315,10 @@ def show_command_router(router: CommandRouter, result: RouterCommandResult) -> N
     table.add_column("Поле", style="cyan", no_wrap=True)
     table.add_column("Значення")
     table.add_row("dry-run", "on" if router.dry_run else "off")
+    table.add_row("executed", str(result.executed))
+    table.add_row("status", result.status)
+    table.add_row("reason_code", result.reason_code or "")
+    table.add_row("is_safety_block", str(result.is_safety_block))
     table.add_row("original action", result.original_action or "")
     table.add_row("normalized action", result.normalized_action or result.action)
     table.add_row("original target", result.original_target or "")
@@ -323,7 +327,6 @@ def show_command_router(router: CommandRouter, result: RouterCommandResult) -> N
         table.add_row("user text", result.original_user_text)
     if result.params:
         table.add_row("params", str(result.params))
-    table.add_row("executed", str(result.executed))
     table.add_row("message", result.message)
     if result.details:
         table.add_row("details", result.details)
@@ -342,11 +345,13 @@ def show_intent_resolver(resolved: ResolvedIntent) -> None:
     if resolved.params:
         table.add_row("params", str(resolved.params))
     table.add_row("confidence", f"{resolved.confidence:.2f}")
+    table.add_row("risk", resolved.risk)
+    table.add_row("need_confirmation", str(resolved.need_confirmation))
+    table.add_row("pass to router", str(should_pass_to_router(resolved)))
     table.add_row("reason", resolved.reason)
     warning = resolver_debug_warning(resolved)
     if warning:
         table.add_row("warning", warning)
-    table.add_row("pass to router", str(should_pass_to_router(resolved)))
     console.print(Panel(table, title="INTENT RESOLVER", border_style="bright_blue"))
 
 
@@ -367,7 +372,7 @@ def record_command_history(
     action = result.normalized_action or result.action
     if action not in ALLOWED_ACTIONS:
         return command_counter
-    if "risk=" in (result.details or "").lower() or "confirmation" in result.message.lower():
+    if result.is_safety_block or result.status == "blocked_confirmation_required":
         return command_counter
 
     command_counter += 1
@@ -389,8 +394,7 @@ def should_try_resolver_for_result(result: RouterCommandResult, user_text: str) 
     if should_try_intent_resolver(result):
         return True
 
-    details = (result.details or "").lower()
-    if "risk=" in details and not has_dangerous_text(user_text) and looks_like_command(user_text):
+    if result.status == "blocked_dangerous" and not has_dangerous_text(user_text) and looks_like_command(user_text):
         return True
 
     return False

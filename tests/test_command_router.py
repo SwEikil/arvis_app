@@ -4,6 +4,9 @@ import unittest
 from unittest.mock import patch
 
 from command_router import CommandRouter
+from intent_resolver import IntentResolver
+from intent_resolver import should_pass_to_router
+from main import should_try_resolver_for_result
 from schemas import ActionIntent
 
 
@@ -21,6 +24,7 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
         )
 
         self.assertFalse(result.executed)
+        self.assertEqual(result.status, "dry_run")
         self.assertEqual(result.params, {"step_percent": 30})
         self.assertIn("30%+", result.details or "")
 
@@ -37,6 +41,7 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
         )
 
         self.assertFalse(result.executed)
+        self.assertEqual(result.status, "dry_run")
         self.assertEqual(result.params, {"step_percent": 15})
         self.assertIn("15%-", result.details or "")
 
@@ -124,6 +129,9 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
         )
 
         self.assertFalse(result.executed)
+        self.assertEqual(result.status, "unsupported")
+        self.assertEqual(result.reason_code, "spotify_api_required")
+        self.assertFalse(result.is_safety_block)
         self.assertIn("Spotify API", result.message)
 
     def test_like_current_song_short_phrase_is_unsupported_not_dangerous(self) -> None:
@@ -133,9 +141,24 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
         )
 
         self.assertFalse(result.executed)
+        self.assertEqual(result.status, "unsupported")
+        self.assertEqual(result.reason_code, "spotify_api_required")
+        self.assertFalse(result.is_safety_block)
         self.assertEqual(result.normalized_action, "music_like_current")
         self.assertIn("Spotify API", result.message)
         self.assertNotIn("risk=", result.details or "")
+
+    def test_like_current_song_preference_phrase_is_unsupported(self) -> None:
+        result = CommandRouter(dry_run=False).route(
+            ActionIntent(action="music_like_current", target="media", risk="safe", need_confirmation=False),
+            user_text="мені подобається ця пісня",
+        )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "unsupported")
+        self.assertEqual(result.reason_code, "spotify_api_required")
+        self.assertFalse(result.is_safety_block)
+        self.assertIn("Spotify API", result.message)
 
     def test_play_next_track_alias_routes_to_music_next(self) -> None:
         result, calls = self._route_media(
@@ -149,6 +172,7 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
         )
 
         self.assertTrue(result.executed)
+        self.assertEqual(result.status, "executed")
         self.assertEqual(result.normalized_action, "music_next")
         self.assertEqual(result.normalized_target, "spotify")
         self.assertEqual(calls, ["music_next"])
@@ -308,6 +332,8 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
         )
 
         self.assertFalse(result.executed)
+        self.assertEqual(result.status, "ambiguous")
+        self.assertEqual(result.reason_code, "volume_direction_unknown")
         self.assertEqual(result.normalized_action, "adjust_volume")
         self.assertEqual(calls, [])
         self.assertIn("Volume direction is not clear", result.message)
@@ -324,6 +350,8 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
         )
 
         self.assertFalse(result.executed)
+        self.assertEqual(result.status, "blocked_dangerous")
+        self.assertTrue(result.is_safety_block)
         self.assertEqual(calls, [])
         self.assertIn("risk=dangerous", result.details or "")
 
@@ -339,8 +367,93 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
         )
 
         self.assertFalse(result.executed)
+        self.assertEqual(result.status, "unknown_action")
+        self.assertEqual(result.reason_code, "action_not_whitelisted")
         self.assertEqual(calls, [])
         self.assertIn("unknown", result.message.lower())
+
+    def test_need_confirmation_is_blocked_with_specific_status(self) -> None:
+        result, calls = self._route_volume(
+            ActionIntent(
+                action="volume_up",
+                target="system",
+                risk="safe",
+                need_confirmation=True,
+            ),
+            user_text="Арвіс, додай гучності",
+        )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "blocked_confirmation_required")
+        self.assertEqual(result.reason_code, "confirmation_required")
+        self.assertTrue(result.is_safety_block)
+        self.assertEqual(calls, [])
+        self.assertIn("confirmation", result.message.lower())
+
+    def test_minecraft_server_without_config_is_not_configured(self) -> None:
+        result = CommandRouter(dry_run=False).route(
+            ActionIntent(
+                action="start_minecraft_server",
+                target="minecraft_server",
+                risk="safe",
+                need_confirmation=False,
+            ),
+            user_text="Підніми майн сервер",
+        )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "not_configured")
+        self.assertEqual(result.reason_code, "minecraft_server_not_configured")
+        self.assertFalse(result.is_safety_block)
+        self.assertIn("not configured", result.message.lower())
+
+    def test_model_risk_dangerous_safe_volume_text_can_be_repaired(self) -> None:
+        router = CommandRouter(dry_run=False)
+        initial = router.route(
+            ActionIntent(
+                action="volume_up",
+                target="system",
+                risk="dangerous",
+                need_confirmation=False,
+            ),
+            user_text="Арвіс, додай гучності",
+        )
+
+        self.assertEqual(initial.status, "blocked_dangerous")
+        self.assertTrue(should_try_resolver_for_result(initial, "Арвіс, додай гучності"))
+
+        resolved = IntentResolver().resolve("Арвіс, додай гучності", use_llm=False)
+        self.assertEqual(resolved.action, "volume_up")
+        self.assertTrue(should_pass_to_router(resolved))
+
+        calls: list[str] = []
+
+        def fake_execute(action: str, params: dict[str, object] | None = None) -> tuple[bool, str, str | None]:
+            calls.append(action)
+            return True, f"fake {action}", "fake wpctl"
+
+        with patch("command_router.execute_volume_action", fake_execute):
+            repaired = router.route(resolved.to_action_intent(), user_text="Арвіс, додай гучності")  # type: ignore[arg-type]
+
+        self.assertTrue(repaired.executed)
+        self.assertEqual(repaired.status, "executed")
+        self.assertEqual(calls, ["volume_up"])
+
+    def test_model_risk_dangerous_delete_text_is_not_repaired(self) -> None:
+        result = CommandRouter(dry_run=False).route(
+            ActionIntent(
+                action="volume_up",
+                target="system",
+                risk="dangerous",
+                need_confirmation=False,
+            ),
+            user_text="видали всі файли",
+        )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "blocked_dangerous")
+        self.assertTrue(result.is_safety_block)
+        self.assertFalse(should_try_resolver_for_result(result, "видали всі файли"))
 
     def _route_volume(
         self,

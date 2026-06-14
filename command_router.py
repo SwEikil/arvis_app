@@ -15,8 +15,11 @@ from schemas import ActionIntent
 class CommandResult:
     executed: bool
     action: str
+    status: str
     message: str
     details: str | None = None
+    reason_code: str | None = None
+    is_safety_block: bool = False
     original_action: str | None = None
     normalized_action: str | None = None
     original_target: str | None = None
@@ -35,12 +38,33 @@ class CommandRouter:
         volume_direction_source = _volume_direction_source(intent.action, intent.target, user_text, action)
         risk = (intent.risk or "").strip().lower()
 
+        dangerous_reason = _dangerous_reason(intent.action, action, user_text)
+        if dangerous_reason is not None:
+            return CommandResult(
+                executed=False,
+                action=action,
+                status="blocked_dangerous",
+                message="Blocked: dangerous action. Nothing was executed.",
+                details=_format_details(f"risk={intent.risk}", dangerous_reason, user_text),
+                reason_code=dangerous_reason,
+                is_safety_block=True,
+                original_action=intent.action,
+                normalized_action=action,
+                original_target=intent.target,
+                normalized_target=target,
+                original_user_text=user_text,
+                params=params,
+            )
+
         if risk != "safe":
             return CommandResult(
                 executed=False,
                 action=action,
-                message="Action was not executed because it requires confirmation or is not supported in v0.1.",
-                details=f"risk={intent.risk}",
+                status="blocked_dangerous",
+                message="Blocked: dangerous action. Nothing was executed.",
+                details=_format_details(f"risk={intent.risk}", None, user_text),
+                reason_code=f"risk_{risk or 'unknown'}",
+                is_safety_block=True,
                 original_action=intent.action,
                 normalized_action=action,
                 original_target=intent.target,
@@ -53,8 +77,11 @@ class CommandRouter:
             return CommandResult(
                 executed=False,
                 action=action,
-                message="Action was not executed because confirmation is required and confirmations are not supported in v0.1.",
-                details="need_confirmation=true",
+                status="blocked_confirmation_required",
+                message="Action requires confirmation and confirmation execution is not supported yet.",
+                details=_format_details("need_confirmation=true", None, user_text),
+                reason_code="confirmation_required",
+                is_safety_block=True,
                 original_action=intent.action,
                 normalized_action=action,
                 original_target=intent.target,
@@ -104,12 +131,14 @@ class CommandRouter:
             return CommandResult(
                 executed=False,
                 action=action,
+                status="ambiguous",
                 message="Volume direction is not clear. Nothing was executed.",
                 details=_format_details(
                     None,
                     "Target looks like an audio scope, but no up/down/mute direction was found in target or user_text.",
                     user_text,
                 ),
+                reason_code="volume_direction_unknown",
                 original_action=intent.action,
                 normalized_action=action,
                 original_target=intent.target,
@@ -121,8 +150,10 @@ class CommandRouter:
         return CommandResult(
             executed=False,
             action=action,
-            message="Action is unknown or not whitelisted. Nothing was executed.",
-            details=None,
+            status="unknown_action",
+            message="Action is unknown or not whitelisted.",
+            details=_format_details(None, None, user_text),
+            reason_code="action_not_whitelisted",
             original_action=intent.action,
             normalized_action=action,
             original_target=intent.target,
@@ -143,11 +174,22 @@ class CommandRouter:
         preview: Callable[[], tuple[bool, str, str | None]],
     ) -> CommandResult:
         executed, message, details = preview() if self.dry_run else execute()
+        status, reason_code, is_safety_block = _classify_outcome(
+            action=action,
+            target=target,
+            dry_run=self.dry_run,
+            executed=executed,
+            message=message,
+            details=details,
+        )
         return CommandResult(
             executed=executed,
             action=action,
+            status=status,
             message=message,
             details=_format_details(details, details_note, user_text),
+            reason_code=reason_code,
+            is_safety_block=is_safety_block,
             original_action=intent.action,
             normalized_action=action,
             original_target=intent.target,
@@ -410,6 +452,35 @@ VOLUME_SCOPE_TARGETS = {
 SEEK_BACKWARD_TARGETS = {"backward", "back", "назад"}
 SEEK_FORWARD_TARGETS = {"forward", "ahead", "вперед"}
 
+DANGEROUS_ACTIONS = {
+    "delete_all_files",
+    "delete_file",
+    "format_disk",
+    "install_package",
+    "run_shell",
+    "execute_command",
+    "open_url",
+    "download_file",
+    "run_script",
+}
+
+DANGEROUS_TEXT_PHRASES = {
+    "видали",
+    "знеси",
+    "стерти",
+    "форматни",
+    "format",
+    "delete",
+    "remove all",
+    "rm rf",
+    "sudo",
+    "kill process",
+    "виконай bash",
+    "запусти shell",
+    "run shell",
+    "execute command",
+}
+
 
 def normalize_action(
     action: str,
@@ -495,6 +566,52 @@ def _contains_phrase(text: str, phrases: set[str]) -> bool:
     return any(phrase in text for phrase in phrases)
 
 
+def _dangerous_reason(original_action: str | None, normalized_action: str, user_text: str | None) -> str | None:
+    if _normalize_action_name(original_action) in DANGEROUS_ACTIONS or normalized_action in DANGEROUS_ACTIONS:
+        return "dangerous_action"
+    if _contains_phrase(_normalize_text(user_text), DANGEROUS_TEXT_PHRASES):
+        return "dangerous_user_text"
+    return None
+
+
+def _classify_outcome(
+    action: str,
+    target: str | None,
+    dry_run: bool,
+    executed: bool,
+    message: str,
+    details: str | None,
+) -> tuple[str, str | None, bool]:
+    message_text = message.lower()
+    details_text = (details or "").lower()
+
+    if action == "music_like_current":
+        return "unsupported", "spotify_api_required", False
+
+    if action == "start_minecraft_server" and "not configured" in message_text:
+        return "not_configured", "minecraft_server_not_configured", False
+
+    if action == "start_minecraft_server" and "not in the whitelist" in message_text:
+        return "unknown_target", "minecraft_server_target_not_whitelisted", False
+
+    if action in APP_ACTIONS and "not in the whitelist" in message_text:
+        return "unknown_target", "app_target_not_whitelisted", False
+
+    if "not supported" in message_text:
+        return "unsupported", "action_not_implemented", False
+
+    if executed:
+        return "executed", None, False
+
+    if dry_run:
+        return "dry_run", None, False
+
+    if "not found" in message_text or "not found" in details_text:
+        return "command_failed", "command_not_found", False
+
+    return "command_failed", "execution_failed", False
+
+
 def _volume_direction_source(
     action: str,
     target: str | None,
@@ -535,11 +652,4 @@ def _format_details(
 
 
 def should_try_intent_resolver(result: CommandResult) -> bool:
-    message = result.message.lower()
-    details = (result.details or "").lower()
-    return (
-        "unknown or not whitelisted" in message
-        or "not in the whitelist" in message
-        or "volume direction is not clear" in message
-        or "not supported" in message and "risk=" not in details
-    )
+    return result.status in {"unknown_action", "unknown_target", "ambiguous"}
