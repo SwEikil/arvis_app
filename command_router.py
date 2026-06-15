@@ -5,6 +5,9 @@ from dataclasses import dataclass
 
 from actions.apps import execute_app_action, normalize_target, preview_app_action
 from actions.media import execute_media_action, preview_media_action
+from actions.minecraft_server import MINECRAFT_ACTIONS
+from actions.minecraft_server import execute_minecraft_server_action
+from actions.minecraft_server import normalize_minecraft_target
 from actions.volume import execute_volume_action, preview_volume_action
 from parameter_extraction import extract_first_number
 from parameter_extraction import get_int_param
@@ -37,6 +40,7 @@ class CommandRouter:
         params = normalize_params(action, getattr(intent, "params", {}), user_text)
         volume_direction_source = _volume_direction_source(intent.action, intent.target, user_text, action)
         risk = (intent.risk or "").strip().lower()
+        repair_minecraft_risk = _can_repair_minecraft_risk(action, target, user_text)
 
         dangerous_reason = _dangerous_reason(intent.action, action, user_text)
         if dangerous_reason is not None:
@@ -56,7 +60,7 @@ class CommandRouter:
                 params=params,
             )
 
-        if risk != "safe":
+        if risk != "safe" and not repair_minecraft_risk:
             return CommandResult(
                 executed=False,
                 action=action,
@@ -73,7 +77,7 @@ class CommandRouter:
                 params=params,
             )
 
-        if intent.need_confirmation:
+        if intent.need_confirmation and not repair_minecraft_risk:
             return CommandResult(
                 executed=False,
                 action=action,
@@ -89,6 +93,9 @@ class CommandRouter:
                 original_user_text=user_text,
                 params=params,
             )
+
+        if action in MINECRAFT_ACTIONS:
+            return self._run_minecraft_action(action, target, intent, user_text, params)
 
         if action in MEDIA_ACTIONS:
             return self._run_or_preview(
@@ -198,6 +205,32 @@ class CommandRouter:
             params=params,
         )
 
+    def _run_minecraft_action(
+        self,
+        action: str,
+        target: str | None,
+        intent: ActionIntent,
+        user_text: str | None,
+        params: dict[str, object],
+    ) -> CommandResult:
+        minecraft_target = normalize_minecraft_target(target)
+        result = execute_minecraft_server_action(action, minecraft_target, dry_run=self.dry_run)
+        return CommandResult(
+            executed=result.executed,
+            action=action,
+            status=result.status,
+            message=result.message,
+            details=_format_details(result.details, None, user_text),
+            reason_code=result.reason_code,
+            is_safety_block=result.is_safety_block,
+            original_action=intent.action,
+            normalized_action=action,
+            original_target=intent.target,
+            normalized_target=minecraft_target,
+            original_user_text=user_text,
+            params=params,
+        )
+
 
 MEDIA_ACTIONS = {
     "music_play_pause",
@@ -227,7 +260,6 @@ VOLUME_ACTIONS = {
 APP_ACTIONS = {
     "open_app",
     "launch_app",
-    "start_minecraft_server",
 }
 
 GENERIC_VOLUME_ACTIONS = {
@@ -351,6 +383,28 @@ ACTION_ALIASES = {
     "like_current_song": "music_like_current",
     "save_current_song": "music_like_current",
     "favorite_current_song": "music_like_current",
+    "start_minecraft_server": "minecraft_server_start",
+    "stop_server": "minecraft_server_stop",
+    "server_stop": "minecraft_server_stop",
+    "stop_minecraft_server": "minecraft_server_stop",
+    "minecraft_stop": "minecraft_server_stop",
+    "shutdown_server": "minecraft_server_stop",
+    "shutdown_minecraft_server": "minecraft_server_stop",
+    "start_server": "minecraft_server_start",
+    "server_start": "minecraft_server_start",
+    "minecraft_start": "minecraft_server_start",
+    "launch_server": "minecraft_server_start",
+    "launch_minecraft_server": "minecraft_server_start",
+    "restart_server": "minecraft_server_restart",
+    "server_restart": "minecraft_server_restart",
+    "restart_minecraft_server": "minecraft_server_restart",
+    "minecraft_restart": "minecraft_server_restart",
+    "reboot_server": "minecraft_server_restart",
+    "server_status": "minecraft_server_status",
+    "check_server": "minecraft_server_status",
+    "check_minecraft_server": "minecraft_server_status",
+    "minecraft_status": "minecraft_server_status",
+    "get_server_status": "minecraft_server_status",
 }
 
 ADJUST_VOLUME_TARGET_ALIASES = {
@@ -474,11 +528,47 @@ DANGEROUS_TEXT_PHRASES = {
     "remove all",
     "rm rf",
     "sudo",
+    "kill",
+    "pkill",
+    "killall",
     "kill process",
+    "bash command",
     "виконай bash",
     "запусти shell",
     "run shell",
     "execute command",
+    "execute shell",
+}
+
+SERVER_KEYWORDS = {
+    "server",
+    "сервер",
+    "майн сервер",
+    "майнкрафт сервер",
+    "minecraft server",
+    "mc server",
+}
+
+MINECRAFT_SAFE_COMMAND_PHRASES = {
+    "запусти сервер",
+    "підніми сервер",
+    "start server",
+    "зупини сервер",
+    "стопни сервер",
+    "вимкни сервер",
+    "stop server",
+    "shutdown server",
+    "зупини майн сервер",
+    "перезапусти сервер",
+    "рестартни сервер",
+    "restart server",
+    "статус сервера",
+    "перевір сервер",
+    "check server",
+    "server status",
+    "покажи логи сервера",
+    "логи сервера",
+    "server logs",
 }
 
 
@@ -489,6 +579,15 @@ def normalize_action(
 ) -> tuple[str, str | None]:
     normalized_action = _normalize_action_name(action)
     normalized_target = normalize_target(target) if target is not None else None
+
+    minecraft_action = ACTION_ALIASES.get(normalized_action)
+    if minecraft_action in MINECRAFT_ACTIONS and _looks_like_minecraft_request(target, user_text, normalized_target):
+        return minecraft_action, "default"
+
+    if normalized_action in MINECRAFT_ACTIONS:
+        if _looks_like_minecraft_request(target, user_text, normalized_target):
+            return normalized_action, "default"
+        return normalized_action, normalize_minecraft_target(target)
 
     user_text_action = _detect_volume_direction(user_text)
     if user_text_action is not None:
@@ -564,6 +663,32 @@ def _detect_seek_direction(value: str | None) -> str | None:
 
 def _contains_phrase(text: str, phrases: set[str]) -> bool:
     return any(phrase in text for phrase in phrases)
+
+
+def _looks_like_minecraft_request(
+    target: str | None,
+    user_text: str | None,
+    normalized_target: str | None = None,
+) -> bool:
+    target_text = _normalize_text(target)
+    user_text_normalized = _normalize_text(user_text)
+    return (
+        normalized_target == "default"
+        or target_text == "default_server"
+        or _contains_phrase(target_text, SERVER_KEYWORDS)
+        or _contains_phrase(user_text_normalized, SERVER_KEYWORDS)
+    )
+
+
+def _can_repair_minecraft_risk(action: str, target: str | None, user_text: str | None) -> bool:
+    if action not in MINECRAFT_ACTIONS:
+        return False
+    if normalize_minecraft_target(target) != "default":
+        return False
+    text = _normalize_text(user_text)
+    if not text or _contains_phrase(text, DANGEROUS_TEXT_PHRASES):
+        return False
+    return _contains_phrase(text, MINECRAFT_SAFE_COMMAND_PHRASES)
 
 
 def _dangerous_reason(original_action: str | None, normalized_action: str, user_text: str | None) -> str | None:

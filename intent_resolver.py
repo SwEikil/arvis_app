@@ -31,6 +31,13 @@ ALLOWED_ACTIONS = {
     "volume_down",
     "volume_mute",
     "volume_unmute",
+    "minecraft_server_status",
+    "minecraft_server_start",
+    "minecraft_server_stop",
+    "minecraft_server_restart",
+    "minecraft_server_logs",
+    "minecraft_server_diagnostics",
+    "minecraft_server_metrics",
     "open_app",
     "launch_app",
     "start_minecraft_server",
@@ -56,6 +63,7 @@ ALLOWED_TARGETS = {
     "discord",
     "telegram",
     "minecraft_server",
+    "default",
 }
 
 COMMAND_HINTS = {
@@ -66,6 +74,10 @@ COMMAND_HINTS = {
     "прибав",
     "відкрий",
     "запусти",
+    "зупини",
+    "стопни",
+    "перезапусти",
+    "рестартни",
     "вруби",
     "постав",
     "поверни",
@@ -111,6 +123,15 @@ COMMAND_HINTS = {
     "mute",
     "unmute",
     "volume",
+    "статус",
+    "логи",
+    "logs",
+    "ресурси",
+    "навантаження",
+    "cpu",
+    "ram",
+    "metrics",
+    "performance",
 }
 
 DANGEROUS_PHRASES = {
@@ -125,6 +146,9 @@ DANGEROUS_PHRASES = {
     "remove all",
     "sudo",
     "rm -rf",
+    "kill",
+    "pkill",
+    "killall",
     "kill process",
     "install",
     "встанови",
@@ -132,9 +156,19 @@ DANGEROUS_PHRASES = {
     "download",
     "run shell",
     "запусти shell",
+    "bash command",
     "execute command",
+    "execute shell",
     "запусти команду",
     "виконай bash",
+}
+
+SERVER_KEYWORDS = {
+    "сервер",
+    "майн сервер",
+    "майнкрафт сервер",
+    "minecraft server",
+    "mc server",
 }
 
 VOLUME_UP_PHRASES = {
@@ -328,6 +362,81 @@ APP_PHRASES: list[tuple[str, set[str]]] = [
     ("brave", {"відкрий браузер", "відкрий brave", "запусти браузер"}),
 ]
 
+MINECRAFT_PHRASES: list[tuple[str, set[str]]] = [
+    (
+        "minecraft_server_status",
+        {
+            "статус майн сервера",
+            "статус сервера",
+            "перевір сервер майна",
+            "перевір майн сервер",
+            "майн сервер працює",
+            "чи працює майн сервер",
+            "чи запущений майнкрафт сервер",
+        },
+    ),
+    (
+        "minecraft_server_restart",
+        {
+            "перезапусти майн сервер",
+            "рестартни майн сервер",
+        },
+    ),
+    (
+        "minecraft_server_start",
+        {
+            "запусти майн сервер",
+            "підніми майн сервер",
+            "запусти майнкрафт сервер",
+            "вруби сервер майнкрафт",
+        },
+    ),
+    (
+        "minecraft_server_stop",
+        {
+            "зупини сервер",
+            "зупини майн сервер",
+            "стопни сервер",
+            "стопни майн сервер",
+            "вимкни сервер",
+            "вимкни майнкрафт сервер",
+            "shutdown server",
+        },
+    ),
+    (
+        "minecraft_server_logs",
+        {
+            "покажи логи майн сервера",
+            "останні логи сервера",
+            "server logs",
+        },
+    ),
+    (
+        "minecraft_server_diagnostics",
+        {
+            "діагностика майн сервера",
+            "що арвіс бачить у процесах сервера",
+            "покажи процеси майн сервера",
+            "server diagnostics",
+        },
+    ),
+    (
+        "minecraft_server_metrics",
+        {
+            "скільки пам'яті хаває сервер",
+            "скільки ram хаває сервер",
+            "скільки ресурсів їсть сервер",
+            "навантаження майн сервера",
+            "cpu майн сервера",
+            "ram майн сервера",
+            "ресурси майн сервера",
+            "minecraft server metrics",
+            "server performance",
+            "server resource usage",
+        },
+    ),
+]
+
 CONTEXT_REPEAT_PHRASES = {"ще", "ще раз", "давай ще"}
 CONTEXT_REVERSE_PHRASES = {"назад", "поверни", "поверни назад", "як було"}
 CONTEXT_REVERSE_KEYWORDS = {"назад", "як було", "поверни назад", "поверни як було", "не те", "забудь"}
@@ -446,6 +555,10 @@ def resolve_with_heuristics(
             matched="dangerous",
         )
 
+    minecraft = _resolve_minecraft(text)
+    if minecraft is not None:
+        return minecraft
+
     like = _resolve_like(text)
     if like is not None:
         return like
@@ -473,10 +586,6 @@ def resolve_with_heuristics(
     app = _resolve_app(text)
     if app is not None:
         return app
-
-    minecraft = _resolve_minecraft(text)
-    if minecraft is not None:
-        return minecraft
 
     context = _resolve_context(text, command_history)
     if context is not None:
@@ -727,6 +836,8 @@ def _resolve_like(text: str) -> ResolvedIntent | None:
 
 
 def _resolve_media(text: str) -> ResolvedIntent | None:
+    if _has_server_keyword(text):
+        return None
     for action, phrases in MEDIA_PHRASES:
         if _contains_any(text, phrases):
             return ResolvedIntent(
@@ -740,6 +851,10 @@ def _resolve_media(text: str) -> ResolvedIntent | None:
                 matched=action,
             )
     return None
+
+
+def _has_server_keyword(text: str) -> bool:
+    return _contains_any(text, SERVER_KEYWORDS)
 
 
 def _resolve_app(text: str) -> ResolvedIntent | None:
@@ -759,24 +874,19 @@ def _resolve_app(text: str) -> ResolvedIntent | None:
 
 
 def _resolve_minecraft(text: str) -> ResolvedIntent | None:
-    phrases = {
-        "запусти майнкрафт сервер",
-        "підніми майн сервер",
-        "вруби сервер майнкрафт",
-        "запусти mc server",
-    }
-    if not _contains_any(text, phrases):
-        return None
-    return ResolvedIntent(
-        action="start_minecraft_server",
-        target="minecraft_server",
-        risk="safe",
-        need_confirmation=False,
-        confidence=0.9,
-        source="heuristic_user_text",
-        reason="User text asks to start the configured Minecraft server.",
-        matched="minecraft_server",
-    )
+    for action, phrases in MINECRAFT_PHRASES:
+        if _contains_any(text, phrases):
+            return ResolvedIntent(
+                action=action,
+                target="default",
+                risk="safe",
+                need_confirmation=False,
+                confidence=0.9,
+                source="heuristic_user_text",
+                reason=f"User text clearly maps to `{action}` for local Minecraft server manager.",
+                matched=action,
+            )
+    return None
 
 
 def _last_command_action(command_history: list[dict[str, object]]) -> str | None:
@@ -808,6 +918,8 @@ def _default_target_for_action(action: str) -> str:
         return "system"
     if action.startswith("music_"):
         return "media"
+    if action.startswith("minecraft_server_"):
+        return "default"
     return ""
 
 
@@ -864,6 +976,7 @@ def _build_llm_prompt(user_text: str, command_history: list[dict[str, object]]) 
     return (
         "You are an intent resolver for a local assistant. Return ONLY JSON.\n"
         "Never return raw shell commands. Only use allowed actions.\n"
+        "For Minecraft server phrases, use the local Minecraft Server Manager actions and do not ask for IP/domain.\n"
         f"Allowed actions: {sorted(ALLOWED_ACTIONS)}\n"
         "Optional params: step_percent for volume_up/volume_down, seconds for media_seek_forward/media_seek_backward.\n"
         "If unclear, set action null and confidence below 0.65.\n"

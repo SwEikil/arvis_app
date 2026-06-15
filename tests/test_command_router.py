@@ -390,22 +390,131 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertIn("confirmation", result.message.lower())
 
-    def test_minecraft_server_without_config_is_not_configured(self) -> None:
-        result = CommandRouter(dry_run=False).route(
-            ActionIntent(
-                action="start_minecraft_server",
-                target="minecraft_server",
-                risk="safe",
-                need_confirmation=False,
-            ),
-            user_text="Підніми майн сервер",
-        )
+    def test_minecraft_server_start_script_missing_is_not_configured(self) -> None:
+        with patch(
+            "command_router.execute_minecraft_server_action",
+            return_value=type(
+                "FakeMinecraftResult",
+                (),
+                {
+                    "executed": False,
+                    "status": "not_configured",
+                    "reason_code": "minecraft_start_script_missing",
+                    "message": "Minecraft start script is missing.",
+                    "details": "path=/missing/start-server.sh",
+                    "is_safety_block": False,
+                },
+            )(),
+        ):
+            result = CommandRouter(dry_run=False).route(
+                ActionIntent(
+                    action="start_minecraft_server",
+                    target="minecraft_server",
+                    risk="safe",
+                    need_confirmation=False,
+                ),
+                user_text="Підніми майн сервер",
+            )
 
         self.assertFalse(result.executed)
         self.assertEqual(result.status, "not_configured")
-        self.assertEqual(result.reason_code, "minecraft_server_not_configured")
+        self.assertEqual(result.reason_code, "minecraft_start_script_missing")
         self.assertFalse(result.is_safety_block)
-        self.assertIn("not configured", result.message.lower())
+        self.assertIn("start script", result.message.lower())
+
+    def test_minecraft_generic_action_aliases_normalize_to_default(self) -> None:
+        cases = [
+            ("stop_server", "minecraft_server_stop"),
+            ("start_server", "minecraft_server_start"),
+            ("restart_server", "minecraft_server_restart"),
+            ("server_status", "minecraft_server_status"),
+        ]
+
+        for raw_action, expected_action in cases:
+            with self.subTest(raw_action=raw_action), patch(
+                "command_router.execute_minecraft_server_action",
+                return_value=type(
+                    "FakeMinecraftResult",
+                    (),
+                    {
+                        "executed": False,
+                        "status": "dry_run",
+                        "reason_code": "test",
+                        "message": "test",
+                        "details": "test",
+                        "is_safety_block": False,
+                    },
+                )(),
+            ) as execute:
+                result = CommandRouter(dry_run=True).route(
+                    ActionIntent(
+                        action=raw_action,
+                        target="Minecraft server",
+                        risk="safe",
+                        need_confirmation=False,
+                    ),
+                    user_text="зупини сервер",
+                )
+
+                self.assertEqual(result.normalized_action, expected_action)
+                self.assertEqual(result.normalized_target, "default")
+                execute.assert_called_once_with(expected_action, "default", dry_run=True)
+
+    def test_minecraft_stop_medium_confirmation_is_repaired_for_configured_server(self) -> None:
+        with patch(
+            "command_router.execute_minecraft_server_action",
+            return_value=type(
+                "FakeMinecraftResult",
+                (),
+                {
+                    "executed": True,
+                    "status": "executed",
+                    "reason_code": "minecraft_server_stopped",
+                    "message": "stopped",
+                    "details": "tmux send-keys stop",
+                    "is_safety_block": False,
+                },
+            )(),
+        ) as execute:
+            result = CommandRouter(dry_run=False).route(
+                ActionIntent(
+                    action="stop_server",
+                    target="Minecraft server",
+                    risk="medium",
+                    need_confirmation=True,
+                ),
+                user_text="зупини сервер",
+            )
+
+        self.assertTrue(result.executed)
+        self.assertEqual(result.status, "executed")
+        self.assertFalse(result.is_safety_block)
+        self.assertEqual(result.normalized_action, "minecraft_server_stop")
+        self.assertEqual(result.normalized_target, "default")
+        execute.assert_called_once_with("minecraft_server_stop", "default", dry_run=False)
+
+    def test_dangerous_server_text_still_blocks(self) -> None:
+        for user_text in ["kill java server", "видали файли сервера"]:
+            with self.subTest(user_text=user_text):
+                result = CommandRouter(dry_run=False).route(
+                    ActionIntent(
+                        action="stop_server",
+                        target="Minecraft server",
+                        risk="medium",
+                        need_confirmation=True,
+                    ),
+                    user_text=user_text,
+                )
+
+                self.assertFalse(result.executed)
+                self.assertEqual(result.status, "blocked_dangerous")
+                self.assertTrue(result.is_safety_block)
+
+    def test_no_media_action_for_stop_server_text(self) -> None:
+        resolved = IntentResolver().resolve("зупини сервер", use_llm=False)
+
+        self.assertEqual(resolved.action, "minecraft_server_stop")
+        self.assertNotEqual(resolved.action, "music_pause")
 
     def test_model_risk_dangerous_safe_volume_text_can_be_repaired(self) -> None:
         router = CommandRouter(dry_run=False)

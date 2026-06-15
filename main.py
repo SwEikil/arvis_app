@@ -19,6 +19,7 @@ from intent_resolver import looks_like_command
 from intent_resolver import resolver_debug_warning
 from intent_resolver import should_pass_to_router
 from ollama_client import OllamaClient
+from response_renderer import render_final_response
 
 
 MAX_HISTORY_MESSAGES = 40
@@ -76,10 +77,76 @@ def main() -> None:
             continue
 
         parsed, warnings = parse_assistant_response(raw_response or "", debug=debug)
-        active_history.append({"role": "assistant", "content": parsed.message})
+        router_results: list[RouterCommandResult] = []
+        resolver_results: list[ResolvedIntent] = []
+        resolver_clarification: ResolvedIntent | None = None
+        final_router_result: RouterCommandResult | None = None
+        final_resolver_result: ResolvedIntent | None = None
+
+        if parsed.action_intent is not None:
+            router_result = router.route(parsed.action_intent, user_text=user_text)
+            router_results.append(router_result)
+            final_router_result = router_result
+            should_repair = should_try_resolver_for_result(router_result, user_text)
+            if not should_repair:
+                command_counter = record_command_history(command_history, command_counter, user_text, router_result)
+
+            if should_repair:
+                resolved = resolver.resolve(user_text, command_history)
+                resolver_results.append(resolved)
+                final_resolver_result = resolved
+                if should_pass_to_router(resolved):
+                    resolved_intent = resolved.to_action_intent()
+                    if resolved_intent is not None:
+                        resolved_router_result = router.route(resolved_intent, user_text=user_text)
+                        router_results.append(resolved_router_result)
+                        final_router_result = resolved_router_result
+                        command_counter = record_command_history(
+                            command_history,
+                            command_counter,
+                            user_text,
+                            resolved_router_result,
+                        )
+                else:
+                    resolver_clarification = resolved
+        else:
+            resolved = resolver.resolve(user_text, command_history)
+            if (
+                resolved.action is not None
+                or resolved.confidence >= 0.65
+                or resolved.source == "context_repair"
+                or looks_like_command(user_text)
+            ):
+                resolver_results.append(resolved)
+                final_resolver_result = resolved
+                if should_pass_to_router(resolved):
+                    resolved_intent = resolved.to_action_intent()
+                    if resolved_intent is not None:
+                        router_result = router.route(resolved_intent, user_text=user_text)
+                        router_results.append(router_result)
+                        final_router_result = router_result
+                        command_counter = record_command_history(command_history, command_counter, user_text, router_result)
+                else:
+                    resolver_clarification = resolved
+
+        final_response = render_final_response(
+            parsed.message,
+            final_router_result,
+            resolver_result=final_resolver_result,
+            debug=debug,
+        )
+        active_history.append(
+            {
+                "role": "assistant",
+                "content": final_response if final_router_result is not None else parsed.message,
+            }
+        )
         session_summary = trim_history_with_summary_placeholder(active_history, session_summary)
 
-        console.print(Panel(parsed.message, title="Арвіс", border_style="green"))
+        console.print(Panel(final_response, title="Арвіс", border_style="green"))
+
+        if debug and final_router_result is not None and parsed.message.strip():
+            console.print(Panel(parsed.message, title="RAW ASSISTANT MESSAGE", border_style="dim"))
 
         if parsed.action_intent is not None:
             console.print(
@@ -89,45 +156,15 @@ def main() -> None:
                     border_style="yellow",
                 )
             )
-            router_result = router.route(parsed.action_intent, user_text=user_text)
-            show_command_router(router, router_result)
-            should_repair = should_try_resolver_for_result(router_result, user_text)
-            if not should_repair:
-                command_counter = record_command_history(command_history, command_counter, user_text, router_result)
 
-            if should_repair:
-                resolved = resolver.resolve(user_text, command_history)
-                show_intent_resolver(resolved)
-                if should_pass_to_router(resolved):
-                    resolved_intent = resolved.to_action_intent()
-                    if resolved_intent is not None:
-                        resolved_router_result = router.route(resolved_intent, user_text=user_text)
-                        show_command_router(router, resolved_router_result)
-                        command_counter = record_command_history(
-                            command_history,
-                            command_counter,
-                            user_text,
-                            resolved_router_result,
-                        )
-                else:
-                    show_resolver_clarification(resolved)
-        else:
-            resolved = resolver.resolve(user_text, command_history)
-            if (
-                resolved.action is not None
-                or resolved.confidence >= 0.65
-                or resolved.source == "context_repair"
-                or looks_like_command(user_text)
-            ):
-                show_intent_resolver(resolved)
-                if should_pass_to_router(resolved):
-                    resolved_intent = resolved.to_action_intent()
-                    if resolved_intent is not None:
-                        router_result = router.route(resolved_intent, user_text=user_text)
-                        show_command_router(router, router_result)
-                        command_counter = record_command_history(command_history, command_counter, user_text, router_result)
-                else:
-                    show_resolver_clarification(resolved)
+        for resolved in resolver_results:
+            show_intent_resolver(resolved)
+
+        for router_result in router_results:
+            show_command_router(router, router_result)
+
+        if resolver_clarification is not None:
+            show_resolver_clarification(resolver_clarification)
 
         if parsed.memory_intent is not None:
             console.print(

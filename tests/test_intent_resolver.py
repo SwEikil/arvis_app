@@ -97,15 +97,35 @@ class IntentResolverTests(unittest.TestCase):
     def test_minecraft_server(self) -> None:
         resolved = self.resolver.resolve("Підніми майн сервер", use_llm=False)
 
-        self.assertEqual(resolved.action, "start_minecraft_server")
-        self.assertEqual(resolved.target, "minecraft_server")
+        self.assertEqual(resolved.action, "minecraft_server_start")
+        self.assertEqual(resolved.target, "default")
         self.assertTrue(should_pass_to_router(resolved))
+
+    def test_server_stop_phrases_prioritize_minecraft(self) -> None:
+        phrases = ["зупини сервер", "зупини майн сервер", "вимкни сервер", "стопни сервер"]
+
+        for phrase in phrases:
+            with self.subTest(phrase=phrase):
+                resolved = self.resolver.resolve(phrase, use_llm=False)
+
+                self.assertEqual(resolved.action, "minecraft_server_stop")
+                self.assertEqual(resolved.target, "default")
+                self.assertNotEqual(resolved.action, "music_pause")
+                self.assertTrue(should_pass_to_router(resolved))
 
     def test_media_pause_natural_phrase(self) -> None:
         resolved = self.resolver.resolve("Постав це на паузу", use_llm=False)
 
         self.assertEqual(resolved.action, "music_pause")
         self.assertTrue(should_pass_to_router(resolved))
+
+    def test_media_pause_still_handles_music_and_video(self) -> None:
+        for phrase in ["зупини музику", "зупини відео", "постав на паузу"]:
+            with self.subTest(phrase=phrase):
+                resolved = self.resolver.resolve(phrase, use_llm=False)
+
+                self.assertEqual(resolved.action, "music_pause")
+                self.assertTrue(should_pass_to_router(resolved))
 
     def test_media_next_natural_phrase(self) -> None:
         resolved = self.resolver.resolve("надави наступну", use_llm=False)

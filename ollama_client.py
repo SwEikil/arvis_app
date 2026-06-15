@@ -1,11 +1,11 @@
-import os
 from typing import Any
 
 import requests
 
-
-DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
-DEFAULT_MODEL = "arvis"
+from config import ARVIS_MODEL
+from config import DEFAULT_ARVIS_MODEL
+from config import DEFAULT_OLLAMA_HOST
+from config import OLLAMA_HOST
 
 
 class OllamaClient:
@@ -15,8 +15,8 @@ class OllamaClient:
         model: str | None = None,
         timeout: int = 60,
     ) -> None:
-        self.host = (host or os.getenv("OLLAMA_HOST") or DEFAULT_OLLAMA_HOST).rstrip("/")
-        self.model = model or os.getenv("ARVIS_MODEL") or DEFAULT_MODEL
+        self.host = (host or OLLAMA_HOST or DEFAULT_OLLAMA_HOST).rstrip("/")
+        self.model = model or ARVIS_MODEL or DEFAULT_ARVIS_MODEL
         self.timeout = timeout
 
     def chat(self, messages: list[dict[str, str]]) -> tuple[str | None, str | None]:

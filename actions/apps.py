@@ -3,31 +3,11 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-
-APP_WHITELIST = {
-    "steam": [
-        ["steam"],
-    ],
-    "spotify": [
-        ["flatpak", "run", "com.spotify.Client"],
-        ["spotify"],
-    ],
-    "brave": [
-        ["brave-browser"],
-        ["brave"],
-    ],
-    "discord": [
-        ["flatpak", "run", "com.discordapp.Discord"],
-        ["discord"],
-    ],
-    "telegram": [
-        ["flatpak", "run", "org.telegram.desktop"],
-        ["telegram-desktop"],
-    ],
-}
+from config import APP_COMMANDS
+from config import get_minecraft_server_config
 
 
-MINECRAFT_SERVERS: dict[str, dict[str, object]] = {}
+APP_WHITELIST = APP_COMMANDS
 
 
 TARGET_ALIASES = {
@@ -60,11 +40,12 @@ TARGET_ALIASES = {
     "telegram": "telegram",
     "телега": "telegram",
     "телеграм": "telegram",
-    "minecraft_server": "minecraft_server",
-    "minecraft server": "minecraft_server",
-    "майнкрафт сервер": "minecraft_server",
-    "сервер майнкрафт": "minecraft_server",
-    "mc server": "minecraft_server",
+    "minecraft_server": "default",
+    "minecraft server": "default",
+    "майнкрафт сервер": "default",
+    "сервер майнкрафт": "default",
+    "майн сервер": "default",
+    "mc server": "default",
 }
 
 
@@ -72,7 +53,7 @@ def normalize_target(target: str | None) -> str:
     normalized = (target or "").strip().lower().replace("-", " ").replace("_", " ")
     normalized = " ".join(normalized.split())
     if normalized == "minecraft server":
-        return "minecraft_server"
+        return "default"
     return TARGET_ALIASES.get(normalized, normalized.replace(" ", "_"))
 
 
@@ -160,11 +141,13 @@ def _start_minecraft_server(target: str) -> tuple[bool, str, str | None]:
 
 
 def _get_minecraft_server_config(target: str) -> tuple[dict[str, object] | None, str | None]:
-    server_key = "main" if target == "minecraft_server" else target
-    server_config = MINECRAFT_SERVERS.get(server_key)
+    server_key = "default" if target == "minecraft_server" else target
+    server_config = get_minecraft_server_config()
     if server_config is None:
-        if target in {"minecraft_server", "main"}:
+        if target in {"minecraft_server", "default"}:
             return None, "Minecraft server is not configured yet."
+        return None, "Minecraft server target is not in the whitelist."
+    if server_key != server_config.key:
         return None, "Minecraft server target is not in the whitelist."
 
     command = _config_command(server_config)
@@ -174,20 +157,20 @@ def _get_minecraft_server_config(target: str) -> tuple[dict[str, object] | None,
     return server_config, None
 
 
-def _config_command(server_config: dict[str, object] | None) -> list[str]:
+def _config_command(server_config: object | None) -> list[str]:
     if not server_config:
         return []
-    command = server_config.get("command")
+    command = getattr(server_config, "command", None)
     if not isinstance(command, list) or not all(isinstance(part, str) for part in command):
         return []
     return command
 
 
-def _config_cwd(server_config: dict[str, object] | None) -> str:
+def _config_cwd(server_config: object | None) -> str:
     if not server_config:
         return ""
-    cwd = server_config.get("cwd")
-    if not isinstance(cwd, str):
+    cwd = getattr(server_config, "cwd", None)
+    if cwd is None:
         return ""
     return str(Path(cwd).expanduser())
 
