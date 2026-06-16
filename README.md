@@ -28,6 +28,67 @@ python main.py
 .venv/bin/python main.py
 ```
 
+## Doctor Mode
+
+Doctor Mode перевіряє, чи локальна конфігурація Арвіса готова до запуску, не виконуючи destructive або invasive дій.
+
+Запуск із project root:
+
+```bash
+python main.py doctor
+```
+
+Або з батьківської папки репозиторію:
+
+```bash
+python arvis_app/main.py doctor
+```
+
+З локального venv:
+
+```bash
+.venv/bin/python main.py doctor
+```
+
+Доступні прапорці:
+
+- `--json` - machine-readable JSON report.
+- `--verbose` - більше діагностичних деталей.
+- `--strict` - режим для CI/dev checks: warnings дають exit code `1`, навіть якщо required checks пройшли.
+- `--fix` - тільки safe fixes: створити локальні `logs/`, `.cache/`, `.runtime/` або safe `.env.example`, якщо їх нема.
+- `--no-color` - вимкнути кольоровий text output; JSON output ніколи не містить ANSI colors.
+
+У REPL можна виконати:
+
+```text
+/doctor
+```
+
+Статуси:
+
+- `[OK]` - перевірка пройдена.
+- `[WARN]` - не критично, але краще виправити.
+- `[FAIL]` - required check не пройдений.
+- `[INFO]` - необов'язкова інформація або disabled optional feature.
+
+Приклад:
+
+```text
+[OK] Runtime: Python 3.14 found
+[OK] Config: .env found
+[WARN] Ollama: Ollama backend is offline or unreachable
+Fix: Start Ollama or update OLLAMA_HOST in .env. Internet access is not required.
+[INFO] Voice: STT backend is optional and not configured
+
+Doctor summary:
+- OK: 8
+- Warnings: 1
+- Failures: 0
+- Info: 3
+```
+
+Doctor redacts secret-like values before printing text or JSON. Never commit `.env`, tokens, API keys, private paths, local logs, caches, runtime state, or model files. Keep only safe placeholders in `.env.example`.
+
 ## Налаштування
 
 Публічний код не містить персональних локальних налаштувань. Імена користувачів, локальні папки, app launch commands і Minecraft server config задаються тільки локально через `.env`.
@@ -73,6 +134,7 @@ OLLAMA_HOST=http://127.0.0.1:11434 ARVIS_MODEL=arvis python main.py
 - `/dryrun on` - увімкнути dry-run.
 - `/dryrun off` - вимкнути dry-run. Після цього виконуються тільки safe whitelist actions.
 - `/reload` або `/restart` - перезапустити Python-процес Арвіса і підхопити оновлений код.
+- `/doctor` - перевірити runtime, config, privacy safety, Ollama, actions і local storage.
 - `/history` - показати активну історію.
 - `/summary` - показати поточний `session_summary`.
 - `/help` - показати команди.

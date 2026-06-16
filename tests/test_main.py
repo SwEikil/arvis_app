@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import Mock
 from unittest.mock import patch
 
+import doctor
 import main
 
 
@@ -101,6 +102,25 @@ class MainReloadCommandTests(unittest.TestCase):
         self.assertEqual(active_history, [{"role": "user", "content": "hello"}])
         self.assertEqual(command_history, [{"counter": 3, "normalized_action": "volume_up"}])
         self.assertEqual(command_counter, 3)
+
+    def test_doctor_repl_command_is_recognized_without_router(self) -> None:
+        router = Mock()
+        router.dry_run = True
+        checks = [doctor.DoctorCheck("ok", "Runtime", "Python found")]
+
+        with patch("main.run_doctor", return_value=checks), patch("main.render_text_report", return_value="doctor report"):
+            result = main.handle_command("/doctor", [], "summary", False, router, [], 0)
+
+        self.assertTrue(result.handled)
+        self.assertFalse(result.exit_requested)
+        router.route.assert_not_called()
+
+    def test_doctor_cli_command_uses_doctor_runner(self) -> None:
+        with patch("main.run_doctor_cli", return_value=0) as run_doctor_cli:
+            exit_code = main.cli(["doctor", "--json"])
+
+        self.assertEqual(exit_code, 0)
+        run_doctor_cli.assert_called_once_with(["--json"])
 
 
 if __name__ == "__main__":

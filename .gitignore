@@ -9,3 +9,10 @@ venv/
 logs/
 .cache/
 .runtime/
+models/
+ollama-models/
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth

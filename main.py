@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import shlex
+import sys
+
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
@@ -10,6 +13,12 @@ from rich.table import Table
 from command_router import CommandResult as RouterCommandResult
 from command_router import CommandRouter
 from command_router import should_try_intent_resolver
+from doctor import DoctorOptions
+from doctor import doctor_exit_code
+from doctor import parse_doctor_args
+from doctor import render_text_report
+from doctor import run_cli as run_doctor_cli
+from doctor import run_doctor
 from intent_parser import parse_assistant_response
 from intent_resolver import ALLOWED_ACTIONS
 from intent_resolver import IntentResolver
@@ -31,6 +40,15 @@ MAX_COMMAND_HISTORY = 10
 
 
 console = Console()
+
+
+def cli(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] == "doctor":
+        return run_doctor_cli(args[1:])
+
+    main()
+    return 0
 
 
 def main() -> None:
@@ -255,6 +273,10 @@ def handle_command(
             )
         return ReplCommandResult(True, False, session_summary, debug)
 
+    if command == "/doctor" or command.startswith("/doctor "):
+        show_doctor_report(user_text)
+        return ReplCommandResult(True, False, session_summary, debug)
+
     if command == "/reset":
         active_history.clear()
         console.print("[green]Активну історію очищено.[/green]")
@@ -444,6 +466,7 @@ def show_help() -> None:
     table.add_row("/dryrun on", "Увімкнути dry-run")
     table.add_row("/dryrun off", "Вимкнути dry-run для safe whitelist actions")
     table.add_row("/reload або /restart", "Перезапустити Python-процес Арвіса")
+    table.add_row("/doctor", "Перевірити локальну конфігурацію і готовність Арвіса")
     table.add_row("/history", "Показати активну історію")
     table.add_row("/summary", "Показати session_summary")
     table.add_row("/help", "Показати команди")
@@ -472,6 +495,35 @@ def show_history(active_history: list[dict[str, str]]) -> None:
 def show_summary(session_summary: str) -> None:
     text = session_summary.strip() or "(session_summary поки порожній)"
     console.print(Panel(text, title="SESSION SUMMARY", border_style="blue"))
+
+
+def show_doctor_report(user_text: str) -> None:
+    try:
+        parts = shlex.split(user_text)
+    except ValueError as error:
+        console.print(Panel(str(error), title="DOCTOR ERROR", border_style="red"))
+        return
+
+    args = parts[1:]
+    try:
+        options = parse_doctor_args(args)
+    except SystemExit:
+        console.print("[yellow]Невірні аргументи /doctor. Спробуй /doctor або /doctor --verbose.[/yellow]")
+        return
+
+    if options.json_output:
+        console.print("[yellow]/doctor --json доступний у CLI: python main.py doctor --json[/yellow]")
+        options = DoctorOptions(verbose=options.verbose, strict=options.strict, fix=options.fix, no_color=options.no_color)
+
+    try:
+        checks = run_doctor(options)
+    except Exception as error:
+        console.print(Panel(f"{type(error).__name__}: {error}", title="DOCTOR ERROR", border_style="red"))
+        return
+
+    console.print(render_text_report(checks, options))
+    if doctor_exit_code(checks, options) != 0:
+        console.print("[yellow]Doctor знайшов проблеми, сер.[/yellow]")
 
 
 def show_command_router(router: CommandRouter, result: RouterCommandResult) -> None:
@@ -573,4 +625,4 @@ def _model_to_dict(model: object) -> dict[str, object]:
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(cli())
