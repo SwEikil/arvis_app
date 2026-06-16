@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from difflib import SequenceMatcher
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,10 +28,13 @@ ALLOWED_ACTIONS = {
     "music_shuffle_off",
     "music_shuffle_toggle",
     "music_like_current",
+    "media_status",
     "volume_up",
     "volume_down",
     "volume_mute",
     "volume_unmute",
+    "volume_status",
+    "volume_set",
     "minecraft_server_status",
     "minecraft_server_start",
     "minecraft_server_stop",
@@ -123,7 +127,12 @@ COMMAND_HINTS = {
     "mute",
     "unmute",
     "volume",
+    "гучність",
     "статус",
+    "грає",
+    "трек",
+    "пісня",
+    "playing",
     "логи",
     "logs",
     "ресурси",
@@ -188,6 +197,10 @@ VOLUME_UP_PHRASES = {
     "louder",
     "volume up",
     "increase volume",
+    "занадто тихо",
+    "погано чути",
+    "слабий звук",
+    "зроби щоб було чутно",
 }
 
 VOLUME_DOWN_PHRASES = {
@@ -204,6 +217,20 @@ VOLUME_DOWN_PHRASES = {
     "quieter",
     "volume down",
     "decrease volume",
+    "вуха ріже",
+    "тихіше трохи",
+    "занадто гучно",
+}
+
+VOLUME_STATUS_PHRASES = {
+    "яка гучність",
+    "скільки звуку",
+    "який звук",
+    "на скільки звук",
+    "volume",
+    "what volume",
+    "перевір звук",
+    "перевір гучність",
 }
 
 SEEK_FORWARD_PHRASES = {
@@ -259,6 +286,37 @@ LIKE_PHRASES = {
     "like this song",
     "save current song",
     "add to liked songs",
+    "мені сподобалася ця пісня додай її",
+    "мені сподобався цей трек",
+    "мені подобається цей трек",
+    "ця пісня імба додай",
+    "о це хороша пісня збережи",
+    "додай її в лайкнуті",
+    "like this",
+    "save this song",
+}
+
+NEGATIVE_NEXT_PHRASES = {
+    "мені не подобається ця пісня давай next",
+    "фігня трек скипни",
+    "це не те наступну",
+    "не подобається пропусти",
+    "skip this",
+    "next one",
+}
+
+MEDIA_STATUS_PHRASES = {
+    "що зараз грає",
+    "яка пісня",
+    "що там включено",
+    "що грає",
+    "що за трек",
+    "який трек",
+    "хто грає",
+    "що в spotify",
+    "що в браузері грає",
+    "now playing",
+    "what is playing",
 }
 
 VOLUME_MUTE_PHRASES = {
@@ -296,6 +354,9 @@ MEDIA_PHRASES: list[tuple[str, set[str]]] = [
             "стопни",
             "постав паузу в браузері",
             "pause",
+            "pause this",
+            "стоп",
+            "хватить поки",
         },
     ),
     (
@@ -312,6 +373,7 @@ MEDIA_PHRASES: list[tuple[str, set[str]]] = [
             "resume",
             "continue",
             "віднови відтворення",
+            "play again",
         },
     ),
     (
@@ -330,6 +392,7 @@ MEDIA_PHRASES: list[tuple[str, set[str]]] = [
             "next",
             "skip",
             "next track",
+            "next one",
         },
     ),
     (
@@ -559,9 +622,17 @@ def resolve_with_heuristics(
     if minecraft is not None:
         return minecraft
 
+    negative_next = _resolve_negative_next(text)
+    if negative_next is not None:
+        return negative_next
+
     like = _resolve_like(text)
     if like is not None:
         return like
+
+    media_status = _resolve_media_status(text)
+    if media_status is not None:
+        return media_status
 
     seek = _resolve_seek(text)
     if seek is not None:
@@ -706,7 +777,21 @@ def _resolve_context(
 
 
 def _resolve_volume(text: str) -> ResolvedIntent | None:
+    if _detect_volume_set_text(text):
+        return ResolvedIntent(
+            action="volume_set",
+            target="system",
+            risk="safe",
+            need_confirmation=False,
+            confidence=0.9,
+            source="heuristic_user_text",
+            reason="User text clearly asks to set a specific volume level.",
+            matched="volume_set",
+            params=_params_for_action("volume_set", text),
+        )
+
     checks = [
+        ("volume_status", VOLUME_STATUS_PHRASES),
         ("volume_unmute", VOLUME_UNMUTE_PHRASES),
         ("volume_mute", VOLUME_MUTE_PHRASES),
         ("volume_down", VOLUME_DOWN_PHRASES),
@@ -744,6 +829,8 @@ def _resolve_volume(text: str) -> ResolvedIntent | None:
 def _params_for_action(action: str, text: str) -> dict[str, object]:
     if action in {"volume_up", "volume_down"}:
         return {"step_percent": extract_first_number(text, 5, 1, 50)}
+    if action == "volume_set":
+        return {"level_percent": extract_first_number(text, 50, 0, 100)}
     if action in {"media_seek_forward", "media_seek_backward"}:
         return {"seconds": extract_first_number(text, 5, 1, 300)}
     return {}
@@ -779,13 +866,27 @@ def _resolve_seek(text: str) -> ResolvedIntent | None:
 
 def _detect_contextual_volume_action(text: str) -> str | None:
     has_volume_context = any(token in text for token in ("гучн", "звук", "volume", "audio", "sound"))
+    if _detect_volume_set_text(text) and has_volume_context:
+        return "volume_set"
     if not has_volume_context:
         return None
+    if any(token in text for token in ("яка", "скільки", "перевір", "what volume")):
+        return "volume_status"
     if any(token in text for token in ("додай", "прибав", "збільш", "підніми", "increase", "raise")):
         return "volume_up"
     if any(token in text for token in ("прибери", "зменш", "знизь", "decrease", "lower")):
         return "volume_down"
     return None
+
+
+def _detect_volume_set_text(text: str) -> bool:
+    patterns = [
+        r"\b(?:постав|встанови)\s+(?:звук|гучність|volume)\D{0,20}\d+",
+        r"\bзроби\s+(?:звук|гучність|volume)\D{0,20}\d+",
+        r"\b(?:звук|гучність|volume)\s+(?:на\s+|to\s+)?\d+",
+        r"\bset volume to\s+\d+",
+    ]
+    return any(re.search(pattern, text) for pattern in patterns)
 
 
 def _resolve_repeat(text: str) -> ResolvedIntent | None:
@@ -821,7 +922,7 @@ def _resolve_shuffle(text: str) -> ResolvedIntent | None:
 
 
 def _resolve_like(text: str) -> ResolvedIntent | None:
-    if not _contains_any(text, LIKE_PHRASES):
+    if not (_contains_any(text, LIKE_PHRASES) or _meaning_match(text, LIKE_PHRASES)):
         return None
     return ResolvedIntent(
         action="music_like_current",
@@ -832,6 +933,36 @@ def _resolve_like(text: str) -> ResolvedIntent | None:
         source="heuristic_user_text",
         reason="User text asks to like or save the current song.",
         matched="like_current_song",
+    )
+
+
+def _resolve_negative_next(text: str) -> ResolvedIntent | None:
+    if not (_contains_any(text, NEGATIVE_NEXT_PHRASES) or _meaning_match(text, NEGATIVE_NEXT_PHRASES)):
+        return None
+    return ResolvedIntent(
+        action="music_next",
+        target="media",
+        risk="safe",
+        need_confirmation=False,
+        confidence=0.88,
+        source="heuristic_user_text",
+        reason="User text asks to skip the current song.",
+        matched="negative_next",
+    )
+
+
+def _resolve_media_status(text: str) -> ResolvedIntent | None:
+    if not (_contains_any(text, MEDIA_STATUS_PHRASES) or _meaning_match(text, MEDIA_STATUS_PHRASES)):
+        return None
+    return ResolvedIntent(
+        action="media_status",
+        target="media",
+        risk="safe",
+        need_confirmation=False,
+        confidence=0.9,
+        source="heuristic_user_text",
+        reason="User text asks what is currently playing.",
+        matched="media_status",
     )
 
 
@@ -859,7 +990,7 @@ def _has_server_keyword(text: str) -> bool:
 
 def _resolve_app(text: str) -> ResolvedIntent | None:
     for target, phrases in APP_PHRASES:
-        if _contains_any(text, phrases):
+        if _contains_any(text, phrases) or _meaning_match(text, phrases):
             return ResolvedIntent(
                 action="open_app",
                 target=target,
@@ -966,6 +1097,8 @@ def _sanitize_params(action: str | None, raw_params: object) -> dict[str, object
     params = raw_params if isinstance(raw_params, dict) else {}
     if action in {"volume_up", "volume_down"}:
         return {"step_percent": get_int_param(params, "step_percent", 5, 1, 50)}
+    if action == "volume_set":
+        return {"level_percent": get_int_param(params, "level_percent", 50, 0, 100)}
     if action in {"media_seek_forward", "media_seek_backward"}:
         return {"seconds": get_int_param(params, "seconds", 5, 1, 300)}
     return {}
@@ -978,7 +1111,7 @@ def _build_llm_prompt(user_text: str, command_history: list[dict[str, object]]) 
         "Never return raw shell commands. Only use allowed actions.\n"
         "For Minecraft server phrases, use the local Minecraft Server Manager actions and do not ask for IP/domain.\n"
         f"Allowed actions: {sorted(ALLOWED_ACTIONS)}\n"
-        "Optional params: step_percent for volume_up/volume_down, seconds for media_seek_forward/media_seek_backward.\n"
+        "Optional params: step_percent for volume_up/volume_down, level_percent for volume_set, seconds for media_seek_forward/media_seek_backward.\n"
         "If unclear, set action null and confidence below 0.65.\n"
         f"Recent command history: {json.dumps(recent_history, ensure_ascii=False)}\n"
         f"User text: {user_text}\n"
@@ -998,8 +1131,35 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
 
 
 def _normalize_text(value: str | None) -> str:
-    return " ".join((value or "").strip().lower().replace("-", " ").replace("_", " ").split())
+    text = (value or "").strip().lower()
+    replacements = {
+        "’": "'",
+        "`": "'",
+        "шо": "що",
+        "некст": "next",
+        "спотік": "spotify",
+        "споті": "spotify",
+        "споти": "spotify",
+        "спотіфай": "spotify",
+        "лайкни": "лайк",
+        "liked": "лайкнуті",
+    }
+    for source, target in replacements.items():
+        text = text.replace(source, target)
+    text = re.sub(r"[?!.,:;()\[\]{}\"“”]+", " ", text)
+    text = text.replace("-", " ").replace("_", " ")
+    return " ".join(text.split())
 
 
 def _contains_any(text: str, phrases: set[str]) -> bool:
     return any(phrase in text for phrase in phrases)
+
+
+def _meaning_match(text: str, phrases: set[str], threshold: float = 0.84) -> bool:
+    if not text:
+        return False
+    for phrase in phrases:
+        normalized_phrase = _normalize_text(phrase)
+        if normalized_phrase and SequenceMatcher(None, text, normalized_phrase).ratio() >= threshold:
+            return True
+    return False

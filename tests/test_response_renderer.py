@@ -95,13 +95,19 @@ class ResponseRendererTests(unittest.TestCase):
         self.assertEqual(render_final_response("", result), "Показую навантаження Minecraft server, сер.")
 
     def test_dry_run(self) -> None:
-        result = self._result(action="volume_up", status="dry_run", reason_code="volume_dry_run", message="dry-run")
+        result = self._result(
+            action="volume_up",
+            status="dry_run",
+            reason_code="volume_dry_run",
+            message="dry-run",
+            params={"step_percent": 5},
+        )
 
         rendered = render_final_response("", result)
 
         self.assertIn("Dry-run", rendered)
-        self.assertIn("volume_up", rendered)
-        self.assertIn("реальна команда не запускалась", rendered)
+        self.assertIn("збільшив гучність на 5%", rendered)
+        self.assertIn("реальна команда не виконувалась", rendered)
 
     def test_unsupported_like_current_song(self) -> None:
         result = self._result(
@@ -130,7 +136,7 @@ class ResponseRendererTests(unittest.TestCase):
     def test_generic_volume_media_app_executed(self) -> None:
         self.assertEqual(
             render_final_response("", self._result("volume_up", "executed", None, "done", executed=True)),
-            "Гучність збільшено, сер.",
+            "Гучність збільшив, сер.",
         )
         self.assertEqual(
             render_final_response("", self._result("music_next", "executed", None, "done", executed=True)),
@@ -141,8 +147,69 @@ class ResponseRendererTests(unittest.TestCase):
                 "",
                 self._result("open_app", "executed", None, "done", executed=True, normalized_target="spotify"),
             ),
-            "Запустив spotify, сер.",
+            "Запустив Spotify, сер.",
         )
+
+    def test_status_and_set_responses(self) -> None:
+        self.assertEqual(
+            render_final_response(
+                "",
+                self._result(
+                    "media_status",
+                    "executed",
+                    None,
+                    "done",
+                    executed=True,
+                    details="status: Playing\nartist: Ren\ntitle: Depression",
+                ),
+            ),
+            "Зараз грає: Ren — Depression, сер.",
+        )
+        self.assertEqual(
+            render_final_response(
+                "",
+                self._result(
+                    "volume_status",
+                    "executed",
+                    None,
+                    "done",
+                    executed=True,
+                    details="volume_percent: 42\nmuted: True",
+                ),
+            ),
+            "Гучність зараз 42%, але звук вимкнений, сер.",
+        )
+        self.assertEqual(
+            render_final_response(
+                "",
+                self._result(
+                    "volume_set",
+                    "executed",
+                    None,
+                    "done",
+                    executed=True,
+                    details="level_percent: 30",
+                    params={"level_percent": 30},
+                ),
+            ),
+            "Поставив гучність на 30%, сер.",
+        )
+
+    def test_unknown_app_target_is_helpful(self) -> None:
+        result = self._result(
+            "open_app",
+            "unknown_target",
+            "app_target_not_whitelisted",
+            "not in whitelist",
+            normalized_target="obs",
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("Ціль не в whitelist", rendered)
+        self.assertIn("obs", rendered)
+        self.assertIn("steam", rendered)
+        self.assertIn("OBS_COMMAND", rendered)
 
     def _result(
         self,
@@ -154,6 +221,7 @@ class ResponseRendererTests(unittest.TestCase):
         details: str | None = None,
         is_safety_block: bool = False,
         normalized_target: str | None = None,
+        params: dict[str, object] | None = None,
     ) -> CommandResult:
         return CommandResult(
             executed=executed,
@@ -165,6 +233,7 @@ class ResponseRendererTests(unittest.TestCase):
             is_safety_block=is_safety_block,
             normalized_action=action,
             normalized_target=normalized_target,
+            params=params,
         )
 
 

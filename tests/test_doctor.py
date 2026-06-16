@@ -190,6 +190,27 @@ class DoctorTests(unittest.TestCase):
 
         self.assertTrue(options.no_color)
 
+    def test_desktop_checks_use_safe_discovery(self) -> None:
+        with patch("doctor.shutil.which", side_effect=lambda command: f"/usr/bin/{command}" if command in {"playerctl", "wpctl"} else None):
+            checks = doctor.check_voice_audio(doctor.DoctorOptions())
+
+        self.assertTrue(any(check.category == "Desktop" and check.title == "playerctl found" for check in checks))
+        self.assertTrue(any(check.category == "Desktop" and check.title == "wpctl found" for check in checks))
+        self.assertTrue(any(check.category == "Desktop" and "flatpak not found" in check.title for check in checks))
+
+    def test_action_readiness_reports_whitelist_and_parseable_commands(self) -> None:
+        with patch("doctor.importlib.import_module"), patch("doctor.shutil.which", return_value=None):
+            checks = doctor.check_action_readiness({"SPOTIFY_COMMAND": "flatpak run com.spotify.Client"}, doctor.DoctorOptions())
+
+        self.assertTrue(any(check.category == "Actions" and "app whitelist has" in check.title for check in checks))
+        self.assertTrue(any(check.category == "Actions" and "spotify fallback/configured commands are parseable" in check.title for check in checks))
+
+    def test_action_readiness_warns_on_unparseable_configured_command(self) -> None:
+        with patch("doctor.importlib.import_module"), patch("doctor.shutil.which", return_value=None):
+            checks = doctor.check_action_readiness({"SPOTIFY_COMMAND": '"unterminated'}, doctor.DoctorOptions())
+
+        self.assertTrue(any(check.status == "warn" and "spotify command from .env is not parseable" in check.title for check in checks))
+
 
 if __name__ == "__main__":
     unittest.main()

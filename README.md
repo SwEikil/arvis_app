@@ -135,6 +135,7 @@ OLLAMA_HOST=http://127.0.0.1:11434 ARVIS_MODEL=arvis python main.py
 - `/dryrun off` - вимкнути dry-run. Після цього виконуються тільки safe whitelist actions.
 - `/reload` або `/restart` - перезапустити Python-процес Арвіса і підхопити оновлений код.
 - `/doctor` - перевірити runtime, config, privacy safety, Ollama, actions і local storage.
+- `/actions` - показати підтримувані safe desktop actions.
 - `/history` - показати активну історію.
 - `/summary` - показати поточний `session_summary`.
 - `/help` - показати команди.
@@ -214,8 +215,11 @@ Resolver v0.3 спочатку блокує destructive phrases, потім пе
 
 - `Арвіс, це слабовато якось. Додай ще гучності` -> `volume_up`
 - `Поверни звук` -> `volume_unmute`
+- `Яка гучність?` -> `volume_status`
+- `Постав звук на 30` -> `volume_set`, params `level_percent=30`
 - `Вруби споті` -> `open_app`, target `spotify`
 - `Постав це на паузу` -> `music_pause`
+- `Що зараз грає?` -> `media_status`
 - `зупини сервер`, `вимкни сервер` -> `minecraft_server_stop`, target `default`
 - `надави наступну`, `скипни` -> `music_next`
 - `попередню`, `поверни минулу пісню`, `включи минулу пісню`, `верни попередню` -> `music_previous`
@@ -312,6 +316,7 @@ Media:
 - `music_shuffle_off`
 - `music_shuffle_toggle`
 - `music_like_current`
+- `media_status`
 
 Volume:
 
@@ -319,6 +324,8 @@ Volume:
 - `volume_down`
 - `volume_mute`
 - `volume_unmute`
+- `volume_status`
+- `volume_set`
 
 Apps:
 

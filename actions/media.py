@@ -23,6 +23,13 @@ def preview_media_action(action: str, params: dict[str, object] | None = None) -
             "Spotify Web API/OAuth is required; no GUI automation will be used.",
         )
 
+    if action == "media_status":
+        return (
+            False,
+            "Dry-run: would check the selected media player status.",
+            "Would select a player with priority: spotify, brave, first available; would read status, artist, title, and album metadata.",
+        )
+
     command = _build_playerctl_action(action, "<selected-player>", params)
     if command is None:
         return False, "Media action is not supported.", None
@@ -49,6 +56,9 @@ def execute_media_action(action: str, params: dict[str, object] | None = None) -
             "Liking current song requires Spotify API and is not configured yet.",
             "Spotify Web API/OAuth is required; no GUI automation will be used.",
         )
+
+    if action == "media_status":
+        return _get_media_status()
 
     if action not in MEDIA_ACTIONS and action not in PARAM_MEDIA_ACTIONS:
         command = None
@@ -84,6 +94,7 @@ def execute_media_action(action: str, params: dict[str, object] | None = None) -
 
 
 PARAM_MEDIA_ACTIONS = {
+    "media_status",
     "media_seek_forward",
     "media_seek_backward",
     "music_repeat_track",
@@ -143,6 +154,45 @@ def _select_player() -> tuple[str | None, str | None]:
             return player, f"available players: {', '.join(players)}"
 
     return players[0], f"available players: {', '.join(players)}"
+
+
+def _get_media_status() -> tuple[bool, str, str | None]:
+    player, player_details = _select_player()
+    if player is None:
+        return False, "Media player was not found.", player_details
+
+    status_result = _run_playerctl(["playerctl", "-p", player, "status"])
+    if status_result.returncode != 0:
+        error_text = (status_result.stderr or status_result.stdout or "").strip()
+        details = f"player={player}"
+        if player_details:
+            details = f"{details}; {player_details}"
+        if error_text:
+            details = f"{details}; error={error_text}"
+        return False, "Media status was not available.", details
+
+    status = status_result.stdout.strip()
+    artist = _metadata_value(player, "artist")
+    title = _metadata_value(player, "title")
+    album = _metadata_value(player, "album")
+    details = [
+        f"player: {player}",
+        f"status: {status}",
+        f"artist: {artist or ''}",
+        f"title: {title or ''}",
+        f"album: {album or ''}",
+    ]
+    if player_details:
+        details.append(player_details)
+    return True, "Media status fetched.", "\n".join(details)
+
+
+def _metadata_value(player: str, key: str) -> str | None:
+    result = _run_playerctl(["playerctl", "-p", player, "metadata", key])
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip()
+    return value or None
 
 
 def _run_playerctl(command: list[str]) -> subprocess.CompletedProcess[str]:

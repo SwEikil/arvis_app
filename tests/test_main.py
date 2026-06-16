@@ -122,6 +122,18 @@ class MainReloadCommandTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         run_doctor_cli.assert_called_once_with(["--json"])
 
+    def test_actions_repl_command_is_recognized_without_router(self) -> None:
+        router = Mock()
+        router.dry_run = True
+
+        with patch("main.show_actions") as show_actions:
+            result = main.handle_command("/actions", [], "summary", False, router, [], 0)
+
+        self.assertTrue(result.handled)
+        self.assertFalse(result.exit_requested)
+        show_actions.assert_called_once()
+        router.route.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

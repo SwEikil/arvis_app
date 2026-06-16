@@ -248,6 +248,7 @@ MEDIA_ACTIONS = {
     "music_shuffle_off",
     "music_shuffle_toggle",
     "music_like_current",
+    "media_status",
 }
 
 VOLUME_ACTIONS = {
@@ -255,6 +256,8 @@ VOLUME_ACTIONS = {
     "volume_down",
     "volume_mute",
     "volume_unmute",
+    "volume_status",
+    "volume_set",
 }
 
 APP_ACTIONS = {
@@ -302,6 +305,11 @@ ACTION_ALIASES = {
     "enable_sound": "volume_unmute",
     "turn_on_sound": "volume_unmute",
     "sound_on": "volume_unmute",
+    "volume_status": "volume_status",
+    "get_volume": "volume_status",
+    "check_volume": "volume_status",
+    "set_volume_level": "volume_set",
+    "volume_set": "volume_set",
     "mute_audio": "volume_mute",
     "mute_sound": "volume_mute",
     "mute_volume": "volume_mute",
@@ -383,6 +391,10 @@ ACTION_ALIASES = {
     "like_current_song": "music_like_current",
     "save_current_song": "music_like_current",
     "favorite_current_song": "music_like_current",
+    "media_status": "media_status",
+    "now_playing": "media_status",
+    "current_track_status": "media_status",
+    "what_is_playing": "media_status",
     "start_minecraft_server": "minecraft_server_start",
     "stop_server": "minecraft_server_stop",
     "server_stop": "minecraft_server_stop",
@@ -617,6 +629,11 @@ def normalize_params(
             normalized_params["step_percent"] = extract_first_number(user_text, 5, 1, 50)
         else:
             normalized_params["step_percent"] = get_int_param(normalized_params, "step_percent", 5, 1, 50)
+    elif action == "volume_set":
+        if user_text and "level_percent" not in normalized_params:
+            normalized_params["level_percent"] = extract_first_number(user_text, 50, 0, 100)
+        else:
+            normalized_params["level_percent"] = get_int_param(normalized_params, "level_percent", 50, 0, 100)
     elif action in {"media_seek_forward", "media_seek_backward"}:
         if user_text and "seconds" not in normalized_params:
             normalized_params["seconds"] = extract_first_number(user_text, 5, 1, 300)

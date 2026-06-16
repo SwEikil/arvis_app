@@ -494,24 +494,53 @@ def check_voice_audio(options: DoctorOptions) -> list[DoctorCheck]:
         DoctorCheck("info", "Voice", "STT backend is optional and not configured"),
         DoctorCheck("info", "Voice", "TTS backend is optional and not configured"),
     ]
-    for command, title in (("wpctl", "PipeWire/WirePlumber control"), ("playerctl", "media player control")):
+    for command, title in (("playerctl", "playerctl"), ("wpctl", "wpctl")):
         if shutil.which(command):
-            checks.append(DoctorCheck("ok", "Audio", f"{title} command found", details=command))
+            checks.append(DoctorCheck("ok", "Desktop", f"{title} found", details=command))
         else:
             checks.append(
                 DoctorCheck(
                     "warn",
-                    "Audio",
-                    f"{title} command not found",
+                    "Desktop",
+                    f"{title} not found",
                     details=command,
                     fix=f"Install or enable `{command}` if you want the related audio/media actions.",
                 )
             )
+    if shutil.which("flatpak"):
+        checks.append(DoctorCheck("ok", "Desktop", "flatpak found", details="flatpak"))
+    else:
+        checks.append(
+            DoctorCheck(
+                "warn",
+                "Desktop",
+                "flatpak not found, Flatpak app fallbacks may fail",
+                fix="Install Flatpak if you use Flatpak app fallback commands.",
+            )
+        )
     return checks
 
 
 def check_action_readiness(env: dict[str, str], options: DoctorOptions) -> list[DoctorCheck]:
     checks: list[DoctorCheck] = []
+    try:
+        from actions.apps import APP_WHITELIST
+    except Exception as exc:
+        checks.append(
+            DoctorCheck(
+                "fail",
+                "Actions",
+                "app whitelist failed to import",
+                details=f"{type(exc).__name__}: {exc}",
+                fix="Fix actions.apps import before using app launch actions.",
+            )
+        )
+    else:
+        if APP_WHITELIST:
+            checks.append(DoctorCheck("ok", "Actions", f"app whitelist has {len(APP_WHITELIST)} targets"))
+        else:
+            checks.append(DoctorCheck("fail", "Actions", "app whitelist is empty", fix="Add safe app targets to APP_COMMANDS."))
+
     for module_name in ("command_router", "actions.apps", "actions.media", "actions.volume", "actions.minecraft_server"):
         try:
             importlib.import_module(module_name)
@@ -529,6 +558,19 @@ def check_action_readiness(env: dict[str, str], options: DoctorOptions) -> list[
             checks.append(DoctorCheck("ok", "Actions", f"{module_name} imports"))
 
     app_commands = _app_commands_from_env(env)
+    for app_name, command_info in app_commands.items():
+        if command_info["parse_error"]:
+            checks.append(
+                DoctorCheck(
+                    "warn",
+                    "Actions",
+                    f"{app_name} command from .env is not parseable",
+                    fix=f"Fix {app_name.upper()}_COMMAND in .env so shlex can parse it as an argv list.",
+                )
+            )
+        elif command_info["commands_parseable"]:
+            checks.append(DoctorCheck("ok", "Actions", f"{app_name} fallback/configured commands are parseable argv lists"))
+
     for app_name, command_info in app_commands.items():
         commands = command_info["commands"]
         explicit = command_info["explicit"]
@@ -824,9 +866,13 @@ def _app_commands_from_env(env: dict[str, str]) -> dict[str, dict[str, object]]:
 
 
 def _command_info(env_value: str | None, fallbacks: list[list[str]]) -> dict[str, object]:
+    explicit = bool(env_value and env_value.strip())
+    parsed = _parse_command(env_value or "")
     return {
         "commands": _command_options(env_value, fallbacks),
-        "explicit": bool(env_value and env_value.strip()),
+        "explicit": explicit,
+        "parse_error": explicit and not parsed,
+        "commands_parseable": all(_is_argv_list(command) for command in fallbacks) and (not explicit or bool(parsed)),
     }
 
 
@@ -849,6 +895,10 @@ def _command_available(command: list[str]) -> bool:
         return False
     executable = command[0]
     return shutil.which(executable) is not None
+
+
+def _is_argv_list(command: object) -> bool:
+    return isinstance(command, list) and bool(command) and all(isinstance(part, str) and part for part in command)
 
 
 def _read_env_file(path: Path) -> dict[str, str]:

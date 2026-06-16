@@ -277,6 +277,10 @@ def handle_command(
         show_doctor_report(user_text)
         return ReplCommandResult(True, False, session_summary, debug)
 
+    if command == "/actions":
+        show_actions()
+        return ReplCommandResult(True, False, session_summary, debug)
+
     if command == "/reset":
         active_history.clear()
         console.print("[green]Активну історію очищено.[/green]")
@@ -467,6 +471,7 @@ def show_help() -> None:
     table.add_row("/dryrun off", "Вимкнути dry-run для safe whitelist actions")
     table.add_row("/reload або /restart", "Перезапустити Python-процес Арвіса")
     table.add_row("/doctor", "Перевірити локальну конфігурацію і готовність Арвіса")
+    table.add_row("/actions", "Показати підтримувані desktop actions")
     table.add_row("/history", "Показати активну історію")
     table.add_row("/summary", "Показати session_summary")
     table.add_row("/help", "Показати команди")
@@ -524,6 +529,35 @@ def show_doctor_report(user_text: str) -> None:
     console.print(render_text_report(checks, options))
     if doctor_exit_code(checks, options) != 0:
         console.print("[yellow]Doctor знайшов проблеми, сер.[/yellow]")
+
+
+def show_actions() -> None:
+    table = Table(title="Підтримувані desktop actions", box=box.SIMPLE)
+    table.add_column("Action", style="cyan", no_wrap=True)
+    table.add_column("Targets/examples")
+    table.add_column("Status")
+    rows = [
+        ("open_app", "spotify, steam, brave, discord, telegram", "ready"),
+        ("music_pause", "media", "ready"),
+        ("music_next", "media", "ready"),
+        ("music_previous", "media", "ready"),
+        ("media_seek_forward", "media", "ready"),
+        ("media_seek_backward", "media", "ready"),
+        ("music_repeat_track", "media", "ready"),
+        ("music_shuffle_toggle", "media", "ready"),
+        ("music_like_current", "media", "unsupported: Spotify API required"),
+        ("volume_up", "system", "ready"),
+        ("volume_down", "system", "ready"),
+        ("volume_mute", "system", "ready"),
+        ("volume_unmute", "system", "ready"),
+        ("media_status", "media", "ready"),
+        ("volume_status", "system", "ready"),
+        ("volume_set", "system", "ready"),
+        ("minecraft_server_status", "default", "ready if configured"),
+    ]
+    for action, targets, status in rows:
+        table.add_row(action, targets, status)
+    console.print(table)
 
 
 def show_command_router(router: CommandRouter, result: RouterCommandResult) -> None:

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import subprocess
 import unittest
 from unittest.mock import patch
 
+from actions.media import execute_media_action
+from actions.volume import execute_volume_action
 from command_router import CommandRouter
 from intent_resolver import IntentResolver
 from intent_resolver import should_pass_to_router
@@ -44,6 +47,96 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
         self.assertEqual(result.status, "dry_run")
         self.assertEqual(result.params, {"step_percent": 15})
         self.assertIn("15%-", result.details or "")
+
+    def test_volume_set_dry_run_uses_level_percent(self) -> None:
+        result = CommandRouter(dry_run=True).route(
+            ActionIntent(
+                action="volume_set",
+                target="system",
+                risk="safe",
+                need_confirmation=False,
+                params={"level_percent": 30},
+            ),
+            user_text="постав звук на 30",
+        )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "dry_run")
+        self.assertEqual(result.params, {"level_percent": 30})
+        self.assertIn("30%", result.details or "")
+
+    def test_volume_status_dry_run_is_whitelisted(self) -> None:
+        result = CommandRouter(dry_run=True).route(
+            ActionIntent(action="volume_status", target="system", risk="safe", need_confirmation=False),
+            user_text="яка гучність?",
+        )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "dry_run")
+        self.assertEqual(result.normalized_action, "volume_status")
+
+    def test_media_status_dry_run_is_whitelisted(self) -> None:
+        result = CommandRouter(dry_run=True).route(
+            ActionIntent(action="media_status", target="media", risk="safe", need_confirmation=False),
+            user_text="що зараз грає?",
+        )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "dry_run")
+        self.assertEqual(result.normalized_action, "media_status")
+
+    def test_volume_status_execute_parses_wpctl_output(self) -> None:
+        with patch(
+            "actions.volume.subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                ["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"],
+                0,
+                "Volume: 0.42 [MUTED]\n",
+                "",
+            ),
+        ):
+            executed, message, details = execute_volume_action("volume_status")
+
+        self.assertTrue(executed)
+        self.assertEqual(message, "Volume status fetched.")
+        self.assertIn("volume_percent: 42", details or "")
+        self.assertIn("muted: True", details or "")
+
+    def test_volume_set_execute_uses_clamped_percent(self) -> None:
+        with patch(
+            "actions.volume.subprocess.run",
+            return_value=subprocess.CompletedProcess([], 0, "", ""),
+        ) as run:
+            executed, message, details = execute_volume_action("volume_set", {"level_percent": 999})
+
+        self.assertTrue(executed)
+        self.assertIn("100%", message)
+        self.assertIn("level_percent: 100", details or "")
+        run.assert_called_once_with(
+            ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "100%"],
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+    def test_media_status_execute_reads_selected_player_metadata(self) -> None:
+        responses = [
+            subprocess.CompletedProcess(["playerctl", "-l"], 0, "brave.instance\nspotify\n", ""),
+            subprocess.CompletedProcess(["playerctl", "-p", "spotify", "status"], 0, "Playing\n", ""),
+            subprocess.CompletedProcess(["playerctl", "-p", "spotify", "metadata", "artist"], 0, "Ren\n", ""),
+            subprocess.CompletedProcess(["playerctl", "-p", "spotify", "metadata", "title"], 0, "Depression\n", ""),
+            subprocess.CompletedProcess(["playerctl", "-p", "spotify", "metadata", "album"], 1, "", "missing"),
+        ]
+
+        with patch("actions.media._run_playerctl", side_effect=responses):
+            executed, message, details = execute_media_action("media_status")
+
+        self.assertTrue(executed)
+        self.assertEqual(message, "Media status fetched.")
+        self.assertIn("player: spotify", details or "")
+        self.assertIn("artist: Ren", details or "")
+        self.assertIn("title: Depression", details or "")
 
     def test_seek_forward_dry_run_uses_seconds(self) -> None:
         result = CommandRouter(dry_run=True).route(

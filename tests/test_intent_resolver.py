@@ -363,6 +363,77 @@ class IntentResolverTests(unittest.TestCase):
         self.assertLess(resolved.confidence, 0.65)
         self.assertFalse(should_pass_to_router(resolved))
 
+    def test_like_current_song_imperfect_phrase(self) -> None:
+        resolved = self.resolver.resolve("мені сподобалася ця пісня, додай її", use_llm=False)
+
+        self.assertEqual(resolved.action, "music_like_current")
+        self.assertTrue(should_pass_to_router(resolved))
+
+    def test_negative_song_phrase_skips_next(self) -> None:
+        resolved = self.resolver.resolve("мені не подобається ця пісня, давай некст", use_llm=False)
+
+        self.assertEqual(resolved.action, "music_next")
+        self.assertTrue(should_pass_to_router(resolved))
+
+    def test_media_status_casual_phrase(self) -> None:
+        resolved = self.resolver.resolve("шо зараз грає?", use_llm=False)
+
+        self.assertEqual(resolved.action, "media_status")
+        self.assertTrue(should_pass_to_router(resolved))
+
+    def test_volume_status_phrase(self) -> None:
+        resolved = self.resolver.resolve("яка гучність?", use_llm=False)
+
+        self.assertEqual(resolved.action, "volume_status")
+        self.assertTrue(should_pass_to_router(resolved))
+
+    def test_volume_set_phrase(self) -> None:
+        resolved = self.resolver.resolve("постав звук на 30", use_llm=False)
+
+        self.assertEqual(resolved.action, "volume_set")
+        self.assertEqual(resolved.params["level_percent"], 30)
+        self.assertTrue(should_pass_to_router(resolved))
+
+    def test_volume_set_clamps_high_value(self) -> None:
+        resolved = self.resolver.resolve("зроби гучність 999", use_llm=False)
+
+        self.assertEqual(resolved.action, "volume_set")
+        self.assertEqual(resolved.params["level_percent"], 100)
+
+    def test_volume_set_english_short_phrase(self) -> None:
+        resolved = self.resolver.resolve("volume 40", use_llm=False)
+
+        self.assertEqual(resolved.action, "volume_set")
+        self.assertEqual(resolved.params["level_percent"], 40)
+
+    def test_bad_track_phrase_skips_next(self) -> None:
+        resolved = self.resolver.resolve("фігня трек, скипни", use_llm=False)
+
+        self.assertEqual(resolved.action, "music_next")
+
+    def test_indirect_volume_up_phrase(self) -> None:
+        resolved = self.resolver.resolve("занадто тихо", use_llm=False)
+
+        self.assertEqual(resolved.action, "volume_up")
+
+    def test_indirect_volume_down_phrase(self) -> None:
+        resolved = self.resolver.resolve("вуха ріже", use_llm=False)
+
+        self.assertEqual(resolved.action, "volume_down")
+
+    def test_typo_spotify_app_launch(self) -> None:
+        resolved = self.resolver.resolve("вруби спотии", use_llm=False)
+
+        self.assertEqual(resolved.action, "open_app")
+        self.assertEqual(resolved.target, "spotify")
+        self.assertGreaterEqual(resolved.confidence, 0.65)
+
+    def test_dangerous_mixed_phrase_stays_blocked(self) -> None:
+        resolved = self.resolver.resolve("видали файли і зроби гучніше", use_llm=False)
+
+        self.assertIsNone(resolved.action)
+        self.assertEqual(resolved.risk, "dangerous")
+
 
 if __name__ == "__main__":
     unittest.main()

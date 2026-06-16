@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from actions.apps import APP_WHITELIST
 from command_router import CommandResult
 from intent_resolver import ResolvedIntent
 
@@ -18,7 +19,7 @@ def render_final_response(
     reason_code = command_result.reason_code or ""
 
     if status == "dry_run":
-        return f"Dry-run, сер: я б виконав дію {action}, але реальна команда не запускалась."
+        return _render_dry_run(action, command_result)
 
     if status == "blocked_dangerous" or command_result.is_safety_block:
         return "Ні, сер. Це небезпечна дія, я її не виконуватиму."
@@ -40,12 +41,23 @@ def render_final_response(
 
     if status == "unknown_target":
         target = command_result.normalized_target or command_result.original_target or ""
-        return f"Ціль не в whitelist, сер: {target}. Нічого не виконував."
+        available = ", ".join(sorted(APP_WHITELIST))
+        return (
+            f"Ціль не в whitelist, сер: {target}. Доступні: {available}. "
+            f"Якщо хочеш додати {target.upper()}, задай {target.upper()}_COMMAND у локальному .env і додай target у whitelist."
+        )
 
     if status == "ambiguous":
         return "Не до кінця зрозумів дію, сер. Нічого не виконував."
 
     if status == "command_failed":
+        if action == "media_status":
+            return "Не знайшов активний media player, сер."
+        if action == "volume_status":
+            details = _parse_details(command_result.details)
+            raw = details.get("raw")
+            if raw:
+                return f"Не зміг нормально прочитати гучність, сер. Raw output: {raw}"
         return command_result.message
 
     if status == "executed":
@@ -126,13 +138,21 @@ def _render_minecraft(action: str, result: CommandResult) -> str | None:
 
 def _render_generic_executed(action: str, result: CommandResult) -> str | None:
     if action == "volume_up":
-        return "Гучність збільшено, сер."
+        return "Гучність збільшив, сер."
     if action == "volume_down":
-        return "Гучність зменшено, сер."
+        return "Гучність зменшив, сер."
     if action == "volume_mute":
-        return "Звук вимкнено, сер."
+        return "Звук вимкнув, сер."
     if action == "volume_unmute":
         return "Звук повернув, сер."
+    if action == "volume_status":
+        return _render_volume_status(result)
+    if action == "volume_set":
+        details = _parse_details(result.details)
+        level = details.get("level_percent") or str((result.params or {}).get("level_percent", ""))
+        return f"Поставив гучність на {level}%, сер."
+    if action == "media_status":
+        return _render_media_status(result)
     if action == "music_next":
         return "Перемкнув на наступний трек, сер."
     if action == "music_previous":
@@ -145,8 +165,78 @@ def _render_generic_executed(action: str, result: CommandResult) -> str | None:
         return "Перемкнув play/pause, сер."
     if action in {"open_app", "launch_app"}:
         target = result.normalized_target or result.original_target or "app"
-        return f"Запустив {target}, сер."
+        return f"Запустив {_display_target(target)}, сер."
     return None
+
+
+def _render_dry_run(action: str, result: CommandResult) -> str:
+    params = result.params or {}
+    target = result.normalized_target or result.original_target or ""
+    if action in {"open_app", "launch_app"}:
+        return f"Dry-run, сер: я б запустив {_display_target(target)}, але реальна команда не виконувалась."
+    if action == "volume_up":
+        return f"Dry-run, сер: я б збільшив гучність на {params.get('step_percent', 5)}%, але реальна команда не виконувалась."
+    if action == "volume_down":
+        return f"Dry-run, сер: я б зменшив гучність на {params.get('step_percent', 5)}%, але реальна команда не виконувалась."
+    if action == "volume_mute":
+        return "Dry-run, сер: я б вимкнув звук, але реальна команда не виконувалась."
+    if action == "volume_unmute":
+        return "Dry-run, сер: я б повернув звук, але реальна команда не виконувалась."
+    if action == "volume_status":
+        return "Dry-run, сер: я б перевірив поточну гучність, але реальна команда не виконувалась."
+    if action == "volume_set":
+        return f"Dry-run, сер: я б поставив гучність на {params.get('level_percent', 50)}%, але реальна команда не виконувалась."
+    if action == "media_status":
+        return "Dry-run, сер: я б перевірив, що зараз грає, але реальна команда не виконувалась."
+    if action == "music_pause":
+        return "Dry-run, сер: я б поставив на паузу, але реальна команда не виконувалась."
+    if action == "music_play":
+        return "Dry-run, сер: я б відновив відтворення, але реальна команда не виконувалась."
+    if action == "music_next":
+        return "Dry-run, сер: я б перемкнув на наступний трек, але реальна команда не виконувалась."
+    if action == "music_previous":
+        return "Dry-run, сер: я б перемкнув на попередній трек, але реальна команда не виконувалась."
+    return f"Dry-run, сер: я б виконав дію {action}, але реальна команда не виконувалась."
+
+
+def _render_media_status(result: CommandResult) -> str:
+    details = _parse_details(result.details)
+    status = (details.get("status") or "").strip().lower()
+    artist = (details.get("artist") or "").strip()
+    title = (details.get("title") or "").strip()
+
+    if status and status != "playing":
+        return "Зараз нічого не грає, сер."
+    if artist and title:
+        return f"Зараз грає: {artist} — {title}, сер."
+    if title:
+        return f"Зараз грає: {title}, сер."
+    return "Плеєр знайдено, але metadata недоступна, сер."
+
+
+def _render_volume_status(result: CommandResult) -> str:
+    details = _parse_details(result.details)
+    volume = details.get("volume_percent")
+    muted = (details.get("muted") or "").lower() == "true"
+    if not volume:
+        raw = details.get("raw")
+        if raw:
+            return f"Не зміг нормально прочитати гучність, сер. Raw output: {raw}"
+        return "Не зміг нормально прочитати гучність, сер."
+    if muted:
+        return f"Гучність зараз {volume}%, але звук вимкнений, сер."
+    return f"Гучність зараз {volume}%, сер."
+
+
+def _display_target(target: str) -> str:
+    names = {
+        "spotify": "Spotify",
+        "steam": "Steam",
+        "brave": "Brave",
+        "discord": "Discord",
+        "telegram": "Telegram",
+    }
+    return names.get(target, target)
 
 
 def _parse_details(details: str | None) -> dict[str, str]:
