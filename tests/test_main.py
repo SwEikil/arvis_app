@@ -6,6 +6,30 @@ from unittest.mock import patch
 
 import doctor
 import main
+from voice_config import VoiceConfig
+from voice_input import VoiceTranscriptionResult
+
+
+class FakeVoiceDucking:
+    instances: list[FakeVoiceDucking] = []
+
+    def __init__(self, config: VoiceConfig, warn=None) -> None:
+        self.config = config
+        self.warn = warn
+        self.applied = True
+        self.restored = False
+        self.entered = False
+        self.exited = False
+        self.instances.append(self)
+
+    def __enter__(self) -> FakeVoiceDucking:
+        self.entered = True
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+        self.exited = True
+        self.restored = True
+        return False
 
 
 class MainReloadCommandTests(unittest.TestCase):
@@ -133,6 +157,92 @@ class MainReloadCommandTests(unittest.TestCase):
         self.assertFalse(result.exit_requested)
         show_actions.assert_called_once()
         router.route.assert_not_called()
+
+    def test_voice_status_command_is_recognized(self) -> None:
+        router = Mock()
+        router.dry_run = True
+
+        with patch("main.show_voice_status") as show_voice_status:
+            result = main.handle_command("/voice status", [], "summary", False, router, [], 7)
+
+        self.assertTrue(result.handled)
+        show_voice_status.assert_called_once()
+        router.route.assert_not_called()
+
+    def test_voice_test_disabled_does_not_route(self) -> None:
+        router = Mock()
+        router.dry_run = True
+        process_text = Mock()
+
+        with patch("main.load_voice_config", return_value=self._voice_config(enabled=False)):
+            result = main.handle_command("/voice test", [], "summary", False, router, [], 7, process_text)
+
+        self.assertTrue(result.handled)
+        process_text.assert_not_called()
+        router.route.assert_not_called()
+
+    def test_voice_once_disabled_does_not_route(self) -> None:
+        router = Mock()
+        router.dry_run = True
+        process_text = Mock()
+
+        with patch("main.load_voice_config", return_value=self._voice_config(enabled=False)):
+            result = main.handle_command("/voice once", [], "summary", False, router, [], 7, process_text)
+
+        self.assertTrue(result.handled)
+        process_text.assert_not_called()
+        router.route.assert_not_called()
+
+    def test_voice_test_recognizes_but_does_not_execute_pipeline(self) -> None:
+        router = Mock()
+        router.dry_run = True
+        process_text = Mock()
+        FakeVoiceDucking.instances.clear()
+
+        with patch("main.load_voice_config", return_value=self._voice_config(enabled=True)), patch(
+            "main.transcribe_once",
+            return_value=VoiceTranscriptionResult(True, text="постав звук на 30"),
+        ), patch("main.VoiceDucking", FakeVoiceDucking):
+            result = main.handle_command("/voice test", [], "summary", False, router, [], 7, process_text)
+
+        self.assertTrue(result.handled)
+        process_text.assert_not_called()
+        router.route.assert_not_called()
+        self.assertEqual(len(FakeVoiceDucking.instances), 1)
+        self.assertTrue(FakeVoiceDucking.instances[0].entered)
+        self.assertTrue(FakeVoiceDucking.instances[0].exited)
+
+    def test_voice_once_routes_recognized_text_through_pipeline(self) -> None:
+        router = Mock()
+        router.dry_run = True
+        process_text = Mock(return_value=("updated", 8))
+        FakeVoiceDucking.instances.clear()
+
+        with patch("main.load_voice_config", return_value=self._voice_config(enabled=True)), patch(
+            "main.transcribe_once",
+            return_value=VoiceTranscriptionResult(True, text="постав звук на 30"),
+        ), patch("main.VoiceDucking", FakeVoiceDucking):
+            result = main.handle_command("/voice once", [], "summary", False, router, [], 7, process_text)
+
+        self.assertTrue(result.handled)
+        self.assertEqual(result.session_summary, "updated")
+        self.assertEqual(result.command_counter, 8)
+        process_text.assert_called_once_with("постав звук на 30")
+        self.assertEqual(len(FakeVoiceDucking.instances), 1)
+        self.assertTrue(FakeVoiceDucking.instances[0].entered)
+        self.assertTrue(FakeVoiceDucking.instances[0].exited)
+
+    def _voice_config(self, enabled: bool) -> VoiceConfig:
+        return VoiceConfig(
+            enabled=enabled,
+            stt_backend="faster_whisper",
+            stt_model="small",
+            stt_device="auto",
+            stt_compute_type="auto",
+            mic_device="",
+            record_seconds=1,
+            language="auto",
+        )
 
 
 if __name__ == "__main__":

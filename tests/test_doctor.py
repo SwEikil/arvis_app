@@ -211,6 +211,51 @@ class DoctorTests(unittest.TestCase):
 
         self.assertTrue(any(check.status == "warn" and "spotify command from .env is not parseable" in check.title for check in checks))
 
+    def test_doctor_voice_disabled_info(self) -> None:
+        with patch("doctor.importlib.util.find_spec", return_value=None), patch("doctor.shutil.which", return_value=None):
+            checks = doctor.check_voice_audio(doctor.DoctorOptions(), {"ARVIS_VOICE_ENABLED": "false"})
+
+        self.assertTrue(any(check.category == "Voice" and check.status == "info" and check.title == "disabled" for check in checks))
+
+    def test_doctor_voice_unsafe_mic_device_fails(self) -> None:
+        with patch("doctor.importlib.util.find_spec", return_value=None), patch("doctor.shutil.which", return_value=None):
+            checks = doctor.check_voice_audio(
+                doctor.DoctorOptions(),
+                {"ARVIS_VOICE_ENABLED": "true", "ARVIS_MIC_DEVICE": "Monitor of Speakers"},
+            )
+
+        self.assertTrue(any(check.category == "Voice" and check.status == "fail" and "monitor/output" in check.title for check in checks))
+
+    def test_doctor_voice_missing_dependency_warns(self) -> None:
+        with patch("doctor.importlib.util.find_spec", return_value=None), patch("doctor.shutil.which", return_value=None):
+            checks = doctor.check_voice_audio(doctor.DoctorOptions(), {"ARVIS_VOICE_ENABLED": "true"})
+
+        self.assertTrue(any(check.category == "Voice" and check.status == "warn" and "faster-whisper" in check.title for check in checks))
+
+    def test_doctor_voice_ducking_invalid_percent_warns(self) -> None:
+        with patch("doctor.importlib.util.find_spec", return_value=None), patch("doctor.shutil.which", return_value="/usr/bin/wpctl"):
+            checks = doctor.check_voice_audio(
+                doctor.DoctorOptions(),
+                {"ARVIS_VOICE_ENABLED": "true", "ARVIS_VOICE_DUCK_PERCENT": "999"},
+            )
+
+        self.assertTrue(any(check.category == "Voice" and check.status == "warn" and "duck percent is invalid" in check.title for check in checks))
+
+    def test_doctor_voice_ducking_missing_wpctl_warns(self) -> None:
+        with patch("doctor.importlib.util.find_spec", return_value=None), patch("doctor.shutil.which", return_value=None):
+            checks = doctor.check_voice_audio(
+                doctor.DoctorOptions(),
+                {"ARVIS_VOICE_ENABLED": "true", "ARVIS_VOICE_DUCKING_ENABLED": "true"},
+            )
+
+        self.assertTrue(any(check.category == "Voice" and check.status == "warn" and "wpctl not found for audio ducking" in check.title for check in checks))
+
+    def test_doctor_voice_ducking_parser_check(self) -> None:
+        with patch("doctor.importlib.util.find_spec", return_value=None), patch("doctor.shutil.which", return_value="/usr/bin/wpctl"):
+            checks = doctor.check_voice_audio(doctor.DoctorOptions(), {"ARVIS_VOICE_ENABLED": "true"})
+
+        self.assertTrue(any(check.category == "Voice" and check.status == "ok" and "volume parser works" in check.title for check in checks))
+
 
 if __name__ == "__main__":
     unittest.main()

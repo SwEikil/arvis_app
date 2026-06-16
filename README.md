@@ -89,6 +89,48 @@ Doctor summary:
 
 Doctor redacts secret-like values before printing text or JSON. Never commit `.env`, tokens, API keys, private paths, local logs, caches, runtime state, or model files. Keep only safe placeholders in `.env.example`.
 
+## Voice Command Readiness v0.1
+
+Voice input is optional and disabled by default. It is designed as a local, manual, one-shot microphone input layer for the existing text pipeline.
+
+Commands:
+
+- `/voice status` - show voice config and optional dependency status.
+- `/voice test` - record a short microphone sample, run STT, and print recognized text without executing it.
+- `/voice once` - record one short microphone command, print recognized text, then process it exactly like typed text.
+
+Voice v0.1 does not implement wake word, speaker verification, always-listening background mode, audio daemon, hotkey push-to-talk, or desktop/system/browser/Spotify/YouTube audio capture. It records only from the configured microphone input.
+
+Voice config is local-only in `.env`:
+
+```bash
+ARVIS_VOICE_ENABLED=false
+ARVIS_STT_BACKEND=faster_whisper
+ARVIS_STT_MODEL=small
+ARVIS_STT_DEVICE=auto
+ARVIS_STT_COMPUTE_TYPE=auto
+ARVIS_MIC_DEVICE=
+ARVIS_VOICE_RECORD_SECONDS=6
+ARVIS_VOICE_LANGUAGE=auto
+ARVIS_VOICE_DUCKING_ENABLED=true
+ARVIS_VOICE_DUCK_PERCENT=15
+ARVIS_VOICE_DUCK_RESTORE=true
+```
+
+Empty `ARVIS_MIC_DEVICE` uses the default microphone. Device names that look like monitor/output/loopback/desktop audio are rejected.
+
+Voice audio ducking is enabled by default for `/voice test` and `/voice once`. Before recording, Arvis reads the default audio sink with `wpctl`, lowers it only if it is currently louder than `ARVIS_VOICE_DUCK_PERCENT`, and restores the previous volume afterward. It does not pause media, mute audio, unmute previously muted audio, or capture desktop/system audio. If `wpctl` is missing or ducking fails, voice recording continues and Arvis prints a warning.
+
+Recommended first test:
+
+```text
+/voice status
+/voice test
+/voice once
+```
+
+If voice dependencies are missing, text mode still works. Voice dependencies are imported lazily only when a voice command is used.
+
 ## Налаштування
 
 Публічний код не містить персональних локальних налаштувань. Імена користувачів, локальні папки, app launch commands і Minecraft server config задаються тільки локально через `.env`.
@@ -120,6 +162,7 @@ OLLAMA_HOST=http://127.0.0.1:11434 ARVIS_MODEL=arvis python main.py
 - `MUSIC_FOLDER`
 - `DOWNLOADS_FOLDER`
 - `STEAM_COMMAND`, `SPOTIFY_COMMAND`, `BRAVE_COMMAND`, `DISCORD_COMMAND`, `TELEGRAM_COMMAND`
+- `ARVIS_VOICE_ENABLED`, `ARVIS_STT_BACKEND`, `ARVIS_STT_MODEL`, `ARVIS_STT_DEVICE`, `ARVIS_STT_COMPUTE_TYPE`, `ARVIS_MIC_DEVICE`, `ARVIS_VOICE_RECORD_SECONDS`, `ARVIS_VOICE_LANGUAGE`
 - `MINECRAFT_SERVER_ENABLED`, `MINECRAFT_SERVER_KEY`, `MINECRAFT_SERVER_NAME`, `MINECRAFT_SERVER_CWD`, `MINECRAFT_SERVER_COMMAND`
 
 Команди з env парсяться через `shlex.split()` і запускаються тільки як argv list з `shell=False`.
@@ -136,6 +179,9 @@ OLLAMA_HOST=http://127.0.0.1:11434 ARVIS_MODEL=arvis python main.py
 - `/reload` або `/restart` - перезапустити Python-процес Арвіса і підхопити оновлений код.
 - `/doctor` - перевірити runtime, config, privacy safety, Ollama, actions і local storage.
 - `/actions` - показати підтримувані safe desktop actions.
+- `/voice status` - показати статус голосового режиму.
+- `/voice test` - розпізнати тестовий голосовий зразок без виконання.
+- `/voice once` - розпізнати одну голосову команду і передати її в text pipeline.
 - `/history` - показати активну історію.
 - `/summary` - показати поточний `session_summary`.
 - `/help` - показати команди.

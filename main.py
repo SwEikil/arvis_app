@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shlex
 import sys
+from collections.abc import Callable
 
 from rich import box
 from rich.console import Console
@@ -33,6 +34,11 @@ from runtime_state import RELOAD_STATE_FILE
 from runtime_state import load_reload_state
 from runtime_state import restart_current_process
 from runtime_state import save_reload_state
+from voice_config import load_voice_config
+from voice_config import voice_disabled_message
+from voice_ducking import VoiceDucking
+from voice_input import get_voice_dependency_status
+from voice_input import transcribe_once
 
 
 MAX_HISTORY_MESSAGES = 40
@@ -97,126 +103,38 @@ def main() -> None:
             router,
             command_history,
             command_counter,
+            lambda recognized_text: process_user_text(
+                recognized_text,
+                active_history,
+                session_summary,
+                debug,
+                router,
+                resolver,
+                client,
+                command_history,
+                command_counter,
+            ),
         )
         if command_result.exit_requested:
             break
         if command_result.handled:
             session_summary = command_result.session_summary
             debug = command_result.debug
+            if command_result.command_counter is not None:
+                command_counter = command_result.command_counter
             continue
 
-        active_history.append({"role": "user", "content": user_text})
-        context_messages = build_context_messages(active_history, session_summary)
-
-        with console.status("[bold green]Арвіс думає...[/bold green]", spinner="dots"):
-            raw_response, error = client.chat(context_messages)
-
-        if error:
-            console.print(Panel(error, title="OLLAMA ERROR", border_style="red"))
-            active_history.pop()
-            continue
-
-        parsed, warnings = parse_assistant_response(raw_response or "", debug=debug)
-        router_results: list[RouterCommandResult] = []
-        resolver_results: list[ResolvedIntent] = []
-        resolver_clarification: ResolvedIntent | None = None
-        final_router_result: RouterCommandResult | None = None
-        final_resolver_result: ResolvedIntent | None = None
-
-        if parsed.action_intent is not None:
-            router_result = router.route(parsed.action_intent, user_text=user_text)
-            router_results.append(router_result)
-            final_router_result = router_result
-            should_repair = should_try_resolver_for_result(router_result, user_text)
-            if not should_repair:
-                command_counter = record_command_history(command_history, command_counter, user_text, router_result)
-
-            if should_repair:
-                resolved = resolver.resolve(user_text, command_history)
-                resolver_results.append(resolved)
-                final_resolver_result = resolved
-                if should_pass_to_router(resolved):
-                    resolved_intent = resolved.to_action_intent()
-                    if resolved_intent is not None:
-                        resolved_router_result = router.route(resolved_intent, user_text=user_text)
-                        router_results.append(resolved_router_result)
-                        final_router_result = resolved_router_result
-                        command_counter = record_command_history(
-                            command_history,
-                            command_counter,
-                            user_text,
-                            resolved_router_result,
-                        )
-                else:
-                    resolver_clarification = resolved
-        else:
-            resolved = resolver.resolve(user_text, command_history)
-            if (
-                resolved.action is not None
-                or resolved.confidence >= 0.65
-                or resolved.source == "context_repair"
-                or looks_like_command(user_text)
-            ):
-                resolver_results.append(resolved)
-                final_resolver_result = resolved
-                if should_pass_to_router(resolved):
-                    resolved_intent = resolved.to_action_intent()
-                    if resolved_intent is not None:
-                        router_result = router.route(resolved_intent, user_text=user_text)
-                        router_results.append(router_result)
-                        final_router_result = router_result
-                        command_counter = record_command_history(command_history, command_counter, user_text, router_result)
-                else:
-                    resolver_clarification = resolved
-
-        final_response = render_final_response(
-            parsed.message,
-            final_router_result,
-            resolver_result=final_resolver_result,
-            debug=debug,
+        session_summary, command_counter = process_user_text(
+            user_text,
+            active_history,
+            session_summary,
+            debug,
+            router,
+            resolver,
+            client,
+            command_history,
+            command_counter,
         )
-        active_history.append(
-            {
-                "role": "assistant",
-                "content": final_response if final_router_result is not None else parsed.message,
-            }
-        )
-        session_summary = trim_history_with_summary_placeholder(active_history, session_summary)
-
-        console.print(Panel(final_response, title="Арвіс", border_style="green"))
-
-        if debug and final_router_result is not None and parsed.message.strip():
-            console.print(Panel(parsed.message, title="RAW ASSISTANT MESSAGE", border_style="dim"))
-
-        if parsed.action_intent is not None:
-            console.print(
-                Panel(
-                    Pretty(_model_to_dict(parsed.action_intent), expand_all=True),
-                    title="ACTION INTENT",
-                    border_style="yellow",
-                )
-            )
-
-        for resolved in resolver_results:
-            show_intent_resolver(resolved)
-
-        for router_result in router_results:
-            show_command_router(router, router_result)
-
-        if resolver_clarification is not None:
-            show_resolver_clarification(resolver_clarification)
-
-        if parsed.memory_intent is not None:
-            console.print(
-                Panel(
-                    Pretty(_model_to_dict(parsed.memory_intent), expand_all=True),
-                    title="MEMORY INTENT",
-                    border_style="blue",
-                )
-            )
-
-        if debug and warnings:
-            console.print(Panel("\n".join(warnings), title="DEBUG", border_style="magenta"))
 
 
 class ReplCommandResult:
@@ -226,11 +144,13 @@ class ReplCommandResult:
         exit_requested: bool,
         session_summary: str,
         debug: bool,
+        command_counter: int | None = None,
     ) -> None:
         self.handled = handled
         self.exit_requested = exit_requested
         self.session_summary = session_summary
         self.debug = debug
+        self.command_counter = command_counter
 
 
 def handle_command(
@@ -241,6 +161,7 @@ def handle_command(
     router: CommandRouter,
     command_history: list[dict[str, object]] | None = None,
     command_counter: int = 0,
+    process_text: Callable[[str], tuple[str, int]] | None = None,
 ) -> ReplCommandResult:
     command = user_text.lower()
 
@@ -280,6 +201,14 @@ def handle_command(
     if command == "/actions":
         show_actions()
         return ReplCommandResult(True, False, session_summary, debug)
+
+    if command == "/voice status":
+        show_voice_status()
+        return ReplCommandResult(True, False, session_summary, debug, command_counter)
+
+    if command in {"/voice test", "/voice once"}:
+        updated_summary, updated_counter = handle_voice_capture_command(command, session_summary, command_counter, process_text)
+        return ReplCommandResult(True, False, updated_summary, debug, updated_counter)
 
     if command == "/reset":
         active_history.clear()
@@ -326,6 +255,133 @@ def handle_command(
         return ReplCommandResult(True, False, session_summary, debug)
 
     return ReplCommandResult(False, False, session_summary, debug)
+
+
+def process_user_text(
+    user_text: str,
+    active_history: list[dict[str, str]],
+    session_summary: str,
+    debug: bool,
+    router: CommandRouter,
+    resolver: IntentResolver,
+    client: OllamaClient,
+    command_history: list[dict[str, object]],
+    command_counter: int,
+) -> tuple[str, int]:
+    active_history.append({"role": "user", "content": user_text})
+    context_messages = build_context_messages(active_history, session_summary)
+
+    with console.status("[bold green]Арвіс думає...[/bold green]", spinner="dots"):
+        raw_response, error = client.chat(context_messages)
+
+    if error:
+        console.print(Panel(error, title="OLLAMA ERROR", border_style="red"))
+        active_history.pop()
+        return session_summary, command_counter
+
+    parsed, warnings = parse_assistant_response(raw_response or "", debug=debug)
+    router_results: list[RouterCommandResult] = []
+    resolver_results: list[ResolvedIntent] = []
+    resolver_clarification: ResolvedIntent | None = None
+    final_router_result: RouterCommandResult | None = None
+    final_resolver_result: ResolvedIntent | None = None
+
+    if parsed.action_intent is not None:
+        router_result = router.route(parsed.action_intent, user_text=user_text)
+        router_results.append(router_result)
+        final_router_result = router_result
+        should_repair = should_try_resolver_for_result(router_result, user_text)
+        if not should_repair:
+            command_counter = record_command_history(command_history, command_counter, user_text, router_result)
+
+        if should_repair:
+            resolved = resolver.resolve(user_text, command_history)
+            resolver_results.append(resolved)
+            final_resolver_result = resolved
+            if should_pass_to_router(resolved):
+                resolved_intent = resolved.to_action_intent()
+                if resolved_intent is not None:
+                    resolved_router_result = router.route(resolved_intent, user_text=user_text)
+                    router_results.append(resolved_router_result)
+                    final_router_result = resolved_router_result
+                    command_counter = record_command_history(
+                        command_history,
+                        command_counter,
+                        user_text,
+                        resolved_router_result,
+                    )
+            else:
+                resolver_clarification = resolved
+    else:
+        resolved = resolver.resolve(user_text, command_history)
+        if (
+            resolved.action is not None
+            or resolved.confidence >= 0.65
+            or resolved.source == "context_repair"
+            or looks_like_command(user_text)
+        ):
+            resolver_results.append(resolved)
+            final_resolver_result = resolved
+            if should_pass_to_router(resolved):
+                resolved_intent = resolved.to_action_intent()
+                if resolved_intent is not None:
+                    router_result = router.route(resolved_intent, user_text=user_text)
+                    router_results.append(router_result)
+                    final_router_result = router_result
+                    command_counter = record_command_history(command_history, command_counter, user_text, router_result)
+            else:
+                resolver_clarification = resolved
+
+    final_response = render_final_response(
+        parsed.message,
+        final_router_result,
+        resolver_result=final_resolver_result,
+        debug=debug,
+    )
+    active_history.append(
+        {
+            "role": "assistant",
+            "content": final_response if final_router_result is not None else parsed.message,
+        }
+    )
+    session_summary = trim_history_with_summary_placeholder(active_history, session_summary)
+
+    console.print(Panel(final_response, title="Арвіс", border_style="green"))
+
+    if debug and final_router_result is not None and parsed.message.strip():
+        console.print(Panel(parsed.message, title="RAW ASSISTANT MESSAGE", border_style="dim"))
+
+    if parsed.action_intent is not None:
+        console.print(
+            Panel(
+                Pretty(_model_to_dict(parsed.action_intent), expand_all=True),
+                title="ACTION INTENT",
+                border_style="yellow",
+            )
+        )
+
+    for resolved in resolver_results:
+        show_intent_resolver(resolved)
+
+    for router_result in router_results:
+        show_command_router(router, router_result)
+
+    if resolver_clarification is not None:
+        show_resolver_clarification(resolver_clarification)
+
+    if parsed.memory_intent is not None:
+        console.print(
+            Panel(
+                Pretty(_model_to_dict(parsed.memory_intent), expand_all=True),
+                title="MEMORY INTENT",
+                border_style="blue",
+            )
+        )
+
+    if debug and warnings:
+        console.print(Panel("\n".join(warnings), title="DEBUG", border_style="magenta"))
+
+    return session_summary, command_counter
 
 
 def build_context_messages(
@@ -472,6 +528,9 @@ def show_help() -> None:
     table.add_row("/reload або /restart", "Перезапустити Python-процес Арвіса")
     table.add_row("/doctor", "Перевірити локальну конфігурацію і готовність Арвіса")
     table.add_row("/actions", "Показати підтримувані desktop actions")
+    table.add_row("/voice status", "Показати статус голосового режиму")
+    table.add_row("/voice test", "Записати тест голосу без виконання команди")
+    table.add_row("/voice once", "Записати одну голосову команду і обробити як текст")
     table.add_row("/history", "Показати активну історію")
     table.add_row("/summary", "Показати session_summary")
     table.add_row("/help", "Показати команди")
@@ -558,6 +617,84 @@ def show_actions() -> None:
     for action, targets, status in rows:
         table.add_row(action, targets, status)
     console.print(table)
+
+
+def show_voice_status() -> None:
+    config = load_voice_config()
+    dependencies = get_voice_dependency_status()
+    table = Table(title="Voice status", box=box.SIMPLE)
+    table.add_column("Поле", style="cyan", no_wrap=True)
+    table.add_column("Значення")
+    table.add_row("enabled", "true" if config.enabled else "false")
+    table.add_row("stt backend", config.stt_backend)
+    table.add_row("stt model", config.stt_model)
+    table.add_row("stt device", config.stt_device)
+    table.add_row("compute type", config.stt_compute_type)
+    table.add_row("mic device", config.mic_device or "(default input)")
+    table.add_row("record seconds", str(config.record_seconds))
+    table.add_row("language", config.language)
+    table.add_row("ducking", "enabled" if config.ducking_enabled else "disabled")
+    table.add_row("duck percent", str(config.duck_percent))
+    table.add_row("duck restore", "enabled" if config.duck_restore else "disabled")
+    table.add_row("faster-whisper", "available" if dependencies.faster_whisper_available else "missing")
+    table.add_row("sounddevice", "available" if dependencies.sounddevice_available else "missing")
+    table.add_row("numpy", "available" if dependencies.numpy_available else "missing")
+    console.print(table)
+    if not config.enabled:
+        console.print(f"[yellow]{voice_disabled_message()}[/yellow]")
+
+
+def handle_voice_capture_command(
+    command: str,
+    session_summary: str,
+    command_counter: int,
+    process_text: Callable[[str], tuple[str, int]] | None,
+) -> tuple[str, int]:
+    config = load_voice_config()
+    if not config.enabled:
+        console.print(f"[yellow]{voice_disabled_message()}[/yellow]")
+        return session_summary, command_counter
+
+    ducking = VoiceDucking(config, warn=lambda message: console.print(f"[yellow]{message}[/yellow]"))
+    with ducking:
+        if ducking.applied:
+            console.print("[cyan]Приглушив звук і слухаю, сер...[/cyan]")
+        else:
+            console.print("[cyan]Слухаю, сер...[/cyan]")
+        result = transcribe_once(config)
+
+    if ducking.restored:
+        console.print("[green]Повернув гучність назад, сер.[/green]")
+
+    if result.no_speech:
+        console.print("[yellow]Не почув команди, сер.[/yellow]")
+        return session_summary, command_counter
+    if not result.ok:
+        console.print(f"[red]{_voice_error_message(result.error)}[/red]")
+        return session_summary, command_counter
+
+    recognized_text = result.text.strip()
+    if not recognized_text:
+        console.print("[yellow]Не почув команди, сер.[/yellow]")
+        return session_summary, command_counter
+
+    console.print(f"[green]Розпізнав: {recognized_text}[/green]")
+    if command == "/voice test":
+        return session_summary, command_counter
+
+    if process_text is None:
+        console.print("[red]Не зміг передати голосову команду в text pipeline, сер.[/red]")
+        return session_summary, command_counter
+    return process_text(recognized_text)
+
+
+def _voice_error_message(error: str) -> str:
+    if error == "unsafe_audio_device":
+        return "Цей audio device схожий на monitor/output source, сер. Я не буду слухати звук системи."
+    if error == "voice_disabled":
+        return voice_disabled_message()
+    safe_error = (error or "unknown error").replace("\n", " ")[:240]
+    return f"Не зміг розпізнати голос, сер: {safe_error}"
 
 
 def show_command_router(router: CommandRouter, result: RouterCommandResult) -> None:

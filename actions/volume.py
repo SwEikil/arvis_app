@@ -47,7 +47,7 @@ def execute_volume_action(action: str, params: dict[str, object] | None = None) 
 
     if action == "volume_status":
         raw_output = result.stdout.strip()
-        parsed = _parse_wpctl_volume(raw_output)
+        parsed = parse_wpctl_volume(raw_output)
         if parsed is None:
             return False, "Volume status parse failed.", f"raw: {raw_output}"
         volume_percent, muted = parsed
@@ -83,7 +83,7 @@ def _build_volume_command(action: str, params: dict[str, object] | None) -> list
     return None
 
 
-def _parse_wpctl_volume(output: str) -> tuple[int, bool] | None:
+def parse_wpctl_volume(output: str) -> tuple[int, bool] | None:
     match = re.search(r"Volume:\s*([0-9]+(?:\.[0-9]+)?)", output)
     if match is None:
         return None
@@ -91,3 +91,7 @@ def _parse_wpctl_volume(output: str) -> tuple[int, bool] | None:
     volume_percent = max(0, min(100, round(value * 100)))
     muted = "[MUTED]" in output.upper()
     return volume_percent, muted
+
+
+def _parse_wpctl_volume(output: str) -> tuple[int, bool] | None:
+    return parse_wpctl_volume(output)

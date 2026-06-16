@@ -80,6 +80,17 @@ KNOWN_ENV_KEYS = {
     "BRAVE_COMMAND",
     "DISCORD_COMMAND",
     "TELEGRAM_COMMAND",
+    "ARVIS_VOICE_ENABLED",
+    "ARVIS_STT_BACKEND",
+    "ARVIS_STT_MODEL",
+    "ARVIS_STT_DEVICE",
+    "ARVIS_STT_COMPUTE_TYPE",
+    "ARVIS_MIC_DEVICE",
+    "ARVIS_VOICE_RECORD_SECONDS",
+    "ARVIS_VOICE_LANGUAGE",
+    "ARVIS_VOICE_DUCKING_ENABLED",
+    "ARVIS_VOICE_DUCK_PERCENT",
+    "ARVIS_VOICE_DUCK_RESTORE",
     "MINECRAFT_SERVER_ENABLED",
     "MINECRAFT_SERVER_KEY",
     "MINECRAFT_SERVER_NAME",
@@ -139,7 +150,7 @@ def run_doctor(options: DoctorOptions | None = None, project_root: Path | None =
     checks.extend(check_local_config(root, env, options))
     checks.extend(check_privacy_safety(root, options))
     checks.extend(check_ollama_backend(env, options))
-    checks.extend(check_voice_audio(options))
+    checks.extend(check_voice_audio(options, env))
     checks.extend(check_action_readiness(env, options))
     checks.extend(check_storage(root, options))
     checks.extend(check_git_safety(root))
@@ -489,11 +500,58 @@ def check_ollama_backend(env: dict[str, str], options: DoctorOptions) -> list[Do
     ]
 
 
-def check_voice_audio(options: DoctorOptions) -> list[DoctorCheck]:
+def check_voice_audio(options: DoctorOptions, env: dict[str, str] | None = None) -> list[DoctorCheck]:
+    env = env or {}
+    voice_enabled = _env_bool(env.get("ARVIS_VOICE_ENABLED"), default=False)
+    ducking_enabled = _env_bool(env.get("ARVIS_VOICE_DUCKING_ENABLED"), default=True)
+    stt_backend = env.get("ARVIS_STT_BACKEND", "faster_whisper").strip() or "faster_whisper"
+    stt_model = env.get("ARVIS_STT_MODEL", "small").strip() or "small"
+    mic_device = env.get("ARVIS_MIC_DEVICE", "").strip()
     checks = [
-        DoctorCheck("info", "Voice", "STT backend is optional and not configured"),
+        DoctorCheck("ok" if voice_enabled else "info", "Voice", "enabled" if voice_enabled else "disabled"),
+        DoctorCheck("ok", "Voice", f"STT backend selected: {stt_backend}"),
+        DoctorCheck("ok", "Voice", "STT model configured", details=f"model={stt_model}"),
         DoctorCheck("info", "Voice", "TTS backend is optional and not configured"),
     ]
+
+    checks.extend(_check_voice_ducking(env, ducking_enabled))
+
+    if mic_device:
+        if any(marker in mic_device.lower() for marker in ("monitor", "output", "loopback", "desktop")):
+            checks.append(
+                DoctorCheck(
+                    "fail",
+                    "Voice",
+                    "selected device looks like a monitor/output source",
+                    details="ARVIS_MIC_DEVICE=[set]",
+                    fix="Set ARVIS_MIC_DEVICE to a microphone input or leave it empty for the default input.",
+                )
+            )
+        else:
+            checks.append(DoctorCheck("ok", "Voice", "microphone device configured", details="ARVIS_MIC_DEVICE=[set]"))
+    else:
+        checks.append(DoctorCheck("warn", "Voice", "microphone device not configured, default input will be used"))
+
+    dependency_checks = [
+        ("faster_whisper", "faster-whisper import available", "faster-whisper import missing"),
+        ("sounddevice", "microphone recording dependency available", "microphone recording dependency missing"),
+        ("numpy", "audio buffer dependency available", "audio buffer dependency missing"),
+    ]
+    for module_name, ok_title, missing_title in dependency_checks:
+        if importlib.util.find_spec(module_name) is not None:
+            checks.append(DoctorCheck("ok", "Voice", ok_title))
+        else:
+            checks.append(
+                DoctorCheck(
+                    "warn",
+                    "Voice",
+                    missing_title,
+                    fix="Install optional voice dependencies locally if you want to use /voice commands.",
+                )
+            )
+
+    checks.append(DoctorCheck("ok", "Voice", "voice samples are temporary and not saved"))
+
     for command, title in (("playerctl", "playerctl"), ("wpctl", "wpctl")):
         if shutil.which(command):
             checks.append(DoctorCheck("ok", "Desktop", f"{title} found", details=command))
@@ -518,6 +576,87 @@ def check_voice_audio(options: DoctorOptions) -> list[DoctorCheck]:
                 fix="Install Flatpak if you use Flatpak app fallback commands.",
             )
         )
+    return checks
+
+
+def _check_voice_ducking(env: dict[str, str], ducking_enabled: bool) -> list[DoctorCheck]:
+    from actions.volume import parse_wpctl_volume
+
+    checks: list[DoctorCheck] = []
+    ducking_raw = env.get("ARVIS_VOICE_DUCKING_ENABLED")
+    restore_raw = env.get("ARVIS_VOICE_DUCK_RESTORE")
+    duck_percent_raw = env.get("ARVIS_VOICE_DUCK_PERCENT", "15")
+
+    ducking_bool = _parse_env_bool(ducking_raw)
+    if ducking_raw is not None and ducking_bool is None:
+        checks.append(
+            DoctorCheck(
+                "warn",
+                "Voice",
+                "voice ducking enabled value is invalid",
+                details="ARVIS_VOICE_DUCKING_ENABLED should be true or false",
+                fix="Set ARVIS_VOICE_DUCKING_ENABLED=true or false in .env.",
+            )
+        )
+    else:
+        checks.append(
+            DoctorCheck(
+                "ok" if ducking_enabled else "info",
+                "Voice",
+                "audio ducking enabled" if ducking_enabled else "audio ducking disabled",
+            )
+        )
+
+    restore_bool = _parse_env_bool(restore_raw)
+    if restore_raw is not None and restore_bool is None:
+        checks.append(
+            DoctorCheck(
+                "warn",
+                "Voice",
+                "voice duck restore value is invalid",
+                details="ARVIS_VOICE_DUCK_RESTORE should be true or false",
+                fix="Set ARVIS_VOICE_DUCK_RESTORE=true or false in .env.",
+            )
+        )
+    else:
+        checks.append(DoctorCheck("ok", "Voice", "audio duck restore configured"))
+
+    try:
+        duck_percent = int(duck_percent_raw)
+    except ValueError:
+        duck_percent = -1
+    if duck_percent < 0 or duck_percent > 100:
+        checks.append(
+            DoctorCheck(
+                "warn",
+                "Voice",
+                "voice duck percent is invalid",
+                details="ARVIS_VOICE_DUCK_PERCENT should be an integer from 0 to 100",
+                fix="Set ARVIS_VOICE_DUCK_PERCENT=15 or another value between 0 and 100.",
+            )
+        )
+    else:
+        checks.append(DoctorCheck("ok", "Voice", "audio duck percent configured", details=f"duck_percent={duck_percent}"))
+
+    if ducking_enabled:
+        if shutil.which("wpctl"):
+            checks.append(DoctorCheck("ok", "Voice", "wpctl found for audio ducking"))
+        else:
+            checks.append(
+                DoctorCheck(
+                    "warn",
+                    "Voice",
+                    "wpctl not found for audio ducking",
+                    fix="Install or enable wpctl/PipeWire tools, or set ARVIS_VOICE_DUCKING_ENABLED=false.",
+                )
+            )
+
+    sample = parse_wpctl_volume("Volume: 0.42 [MUTED]")
+    if sample == (42, True):
+        checks.append(DoctorCheck("ok", "Voice", "audio ducking volume parser works"))
+    else:
+        checks.append(DoctorCheck("fail", "Voice", "audio ducking volume parser failed"))
+
     return checks
 
 
@@ -927,9 +1066,19 @@ def _parse_command(value: str) -> list[str]:
 
 
 def _env_bool(value: str | None, default: bool = False) -> bool:
+    parsed = _parse_env_bool(value)
+    return default if parsed is None else parsed
+
+
+def _parse_env_bool(value: str | None) -> bool | None:
     if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return None
 
 
 def _git_tracked_files(root: Path) -> list[str] | None:
