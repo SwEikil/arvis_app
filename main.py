@@ -20,6 +20,10 @@ from intent_resolver import resolver_debug_warning
 from intent_resolver import should_pass_to_router
 from ollama_client import OllamaClient
 from response_renderer import render_final_response
+from runtime_state import RELOAD_STATE_FILE
+from runtime_state import load_reload_state
+from runtime_state import restart_current_process
+from runtime_state import save_reload_state
 
 
 MAX_HISTORY_MESSAGES = 40
@@ -39,7 +43,23 @@ def main() -> None:
     command_history: list[dict[str, object]] = []
     command_counter = 0
 
+    reload_state_file_was_present = RELOAD_STATE_FILE.exists()
+    reload_state = load_reload_state()
+    reload_state_restored = False
+    if reload_state is not None:
+        session_summary, debug, command_counter, reload_state_restored = restore_runtime_state(
+            reload_state,
+            active_history,
+            command_history,
+            router,
+        )
+
     show_startup(client)
+    if reload_state_file_was_present:
+        if reload_state_restored:
+            console.print("[green]Reloaded successfully. Runtime state restored.[/green]")
+        else:
+            console.print("[green]Reloaded successfully.[/green]")
 
     while True:
         try:
@@ -57,6 +77,8 @@ def main() -> None:
             session_summary,
             debug,
             router,
+            command_history,
+            command_counter,
         )
         if command_result.exit_requested:
             break
@@ -199,12 +221,39 @@ def handle_command(
     session_summary: str,
     debug: bool,
     router: CommandRouter,
+    command_history: list[dict[str, object]] | None = None,
+    command_counter: int = 0,
 ) -> ReplCommandResult:
     command = user_text.lower()
 
     if command in {"/exit", "/quit"}:
         console.print("[dim]Вихід.[/dim]")
         return ReplCommandResult(True, True, session_summary, debug)
+
+    if command in {"/reload", "/restart"}:
+        console.print("[cyan]Reloading Arvis, сер...[/cyan]")
+        state_saved = save_reload_state(
+            dry_run=router.dry_run,
+            debug=debug,
+            session_summary=session_summary,
+            active_history=active_history,
+            command_history=command_history or [],
+            command_counter=command_counter,
+        )
+        if not state_saved:
+            console.print("[yellow]Не вдалось зберегти runtime state. Перезапускаю без нього.[/yellow]")
+
+        try:
+            restart_current_process()
+        except OSError as error:
+            console.print(
+                Panel(
+                    f"{error}\n\nСпробуй вручну: /exit, потім python main.py",
+                    title="RELOAD ERROR",
+                    border_style="red",
+                )
+            )
+        return ReplCommandResult(True, False, session_summary, debug)
 
     if command == "/reset":
         active_history.clear()
@@ -295,6 +344,83 @@ def update_session_summary(
     return current_summary
 
 
+def restore_runtime_state(
+    state: dict[str, object],
+    active_history: list[dict[str, str]],
+    command_history: list[dict[str, object]],
+    router: CommandRouter,
+) -> tuple[str, bool, int, bool]:
+    session_summary = ""
+    debug = False
+    command_counter = 0
+    restored = False
+
+    dry_run = state.get("dry_run")
+    if isinstance(dry_run, bool):
+        router.dry_run = dry_run
+        restored = True
+
+    debug_value = state.get("debug")
+    if isinstance(debug_value, bool):
+        debug = debug_value
+        restored = True
+
+    summary_value = state.get("session_summary")
+    if isinstance(summary_value, str):
+        session_summary = summary_value
+        restored = True
+
+    restored_active_history = _valid_active_history(state.get("active_history"))
+    if restored_active_history is not None:
+        active_history[:] = restored_active_history[-MAX_HISTORY_MESSAGES:]
+        restored = True
+
+    restored_command_history = _valid_command_history(state.get("command_history"))
+    if restored_command_history is not None:
+        command_history[:] = restored_command_history[-MAX_COMMAND_HISTORY:]
+        restored = True
+
+    counter_value = state.get("command_counter")
+    if isinstance(counter_value, int) and counter_value >= 0:
+        command_counter = counter_value
+        restored = True
+    elif command_history:
+        command_counter = max(
+            (item.get("counter") for item in command_history if isinstance(item.get("counter"), int)),
+            default=0,
+        )
+
+    return session_summary, debug, command_counter, restored
+
+
+def _valid_active_history(value: object) -> list[dict[str, str]] | None:
+    if not isinstance(value, list):
+        return None
+
+    messages: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            return None
+        role = item.get("role")
+        content = item.get("content")
+        if not isinstance(role, str) or not isinstance(content, str):
+            return None
+        messages.append({"role": role, "content": content})
+    return messages
+
+
+def _valid_command_history(value: object) -> list[dict[str, object]] | None:
+    if not isinstance(value, list):
+        return None
+
+    history: list[dict[str, object]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            return None
+        history.append(dict(item))
+    return history
+
+
 def show_startup(client: OllamaClient) -> None:
     console.print(
         Panel(
@@ -317,6 +443,7 @@ def show_help() -> None:
     table.add_row("/dryrun", "Показати стан dry-run")
     table.add_row("/dryrun on", "Увімкнути dry-run")
     table.add_row("/dryrun off", "Вимкнути dry-run для safe whitelist actions")
+    table.add_row("/reload або /restart", "Перезапустити Python-процес Арвіса")
     table.add_row("/history", "Показати активну історію")
     table.add_row("/summary", "Показати session_summary")
     table.add_row("/help", "Показати команди")

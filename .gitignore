@@ -8,3 +8,4 @@ venv/
 *.sqlite
 logs/
 .cache/
+.runtime/
