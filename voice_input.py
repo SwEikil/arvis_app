@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import math
+import shutil
+import struct
 import tempfile
 import wave
 from dataclasses import dataclass
@@ -27,6 +30,14 @@ class VoiceTranscriptionResult:
     text: str = ""
     error: str = ""
     no_speech: bool = False
+    debug_audio_path: str = ""
+
+
+@dataclass(frozen=True)
+class VoiceAudioStats:
+    duration_seconds: float
+    rms: float
+    peak: float
 
 
 def get_voice_dependency_status() -> VoiceDependencyStatus:
@@ -37,7 +48,7 @@ def get_voice_dependency_status() -> VoiceDependencyStatus:
     )
 
 
-def transcribe_once(config: VoiceConfig) -> VoiceTranscriptionResult:
+def preflight_voice_capture(config: VoiceConfig) -> VoiceTranscriptionResult | None:
     if not config.enabled:
         return VoiceTranscriptionResult(False, error="voice_disabled")
     if config.stt_backend != "faster_whisper":
@@ -55,11 +66,19 @@ def transcribe_once(config: VoiceConfig) -> VoiceTranscriptionResult:
         missing.append("numpy")
     if missing:
         return VoiceTranscriptionResult(False, error=f"missing optional voice dependencies: {', '.join(missing)}")
+    return None
+
+
+def transcribe_once(config: VoiceConfig) -> VoiceTranscriptionResult:
+    preflight = preflight_voice_capture(config)
+    if preflight is not None:
+        return preflight
 
     temp_path: Path | None = None
     try:
+        ensure_stt_model_loaded(config)
         temp_path = record_microphone_to_temp_wav(config)
-        text = transcribe_audio_file(temp_path, config)
+        return transcribe_recorded_audio(temp_path, config)
     except Exception as error:
         return VoiceTranscriptionResult(False, error=safe_error(error))
     finally:
@@ -68,10 +87,6 @@ def transcribe_once(config: VoiceConfig) -> VoiceTranscriptionResult:
                 temp_path.unlink(missing_ok=True)
             except OSError:
                 pass
-
-    if not text.strip():
-        return VoiceTranscriptionResult(False, no_speech=True)
-    return VoiceTranscriptionResult(True, text=text.strip())
 
 
 def record_microphone_to_temp_wav(config: VoiceConfig) -> Path:
@@ -102,12 +117,91 @@ def record_microphone_to_temp_wav(config: VoiceConfig) -> Path:
 
 
 def transcribe_audio_file(path: Path, config: VoiceConfig) -> str:
-    model = _load_model(config)
+    text, _info = _run_model_transcribe(path, config)
+    return text
+
+
+def transcribe_recorded_audio(path: Path, config: VoiceConfig) -> VoiceTranscriptionResult:
+    debug_path = save_debug_audio(path) if config.debug_save_last else ""
+    stats = analyze_wav_audio(path)
+    if stats.rms < config.min_rms and stats.peak < config.min_peak:
+        return VoiceTranscriptionResult(False, no_speech=True, debug_audio_path=debug_path)
+
+    try:
+        text, info = _run_model_transcribe(path, config)
+    except Exception as error:
+        return VoiceTranscriptionResult(False, error=safe_error(error), debug_audio_path=debug_path)
+
+    stripped = text.strip()
+    if not stripped:
+        return VoiceTranscriptionResult(False, no_speech=True, debug_audio_path=debug_path)
+    if not looks_like_valid_voice_transcript(stripped, info, config):
+        return VoiceTranscriptionResult(False, error="unclear_voice", debug_audio_path=debug_path)
+    return VoiceTranscriptionResult(True, text=stripped, debug_audio_path=debug_path)
+
+
+def analyze_wav_audio(path: Path) -> VoiceAudioStats:
+    with wave.open(str(path), "rb") as wav_file:
+        channels = max(1, wav_file.getnchannels())
+        sample_width = wav_file.getsampwidth()
+        frame_count = wav_file.getnframes()
+        framerate = wav_file.getframerate() or 1
+        frames = wav_file.readframes(frame_count)
+
+    if not frames or frame_count <= 0:
+        return VoiceAudioStats(duration_seconds=0.0, rms=0.0, peak=0.0)
+
+    samples = _decode_pcm_samples(frames, sample_width)
+    if not samples:
+        return VoiceAudioStats(duration_seconds=frame_count / framerate, rms=0.0, peak=0.0)
+
+    squared = sum(sample * sample for sample in samples)
+    rms = math.sqrt(squared / len(samples))
+    peak = max(abs(sample) for sample in samples)
+    return VoiceAudioStats(duration_seconds=frame_count / framerate, rms=rms, peak=peak)
+
+
+def looks_like_valid_voice_transcript(text: str, info: object | None, config: VoiceConfig) -> bool:
+    normalized = " ".join(text.strip().lower().split())
+    if not normalized:
+        return False
+    if normalized in {"you", "uh", "um", "а", ".", ",", "..."}:
+        return False
+
+    detected_language = getattr(info, "language", None)
+    if isinstance(detected_language, str) and config.allowed_languages:
+        if detected_language.strip().lower() not in config.allowed_languages:
+            return False
+
+    return True
+
+
+def save_debug_audio(path: Path) -> str:
+    target = Path(".runtime") / "voice_debug" / "last_voice.wav"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(path, target)
+    return str(target)
+
+
+def ensure_stt_model_loaded(config: VoiceConfig) -> object:
+    return _load_model(config)
+
+
+def _run_model_transcribe(path: Path, config: VoiceConfig) -> tuple[str, object | None]:
+    model = ensure_stt_model_loaded(config)
     kwargs: dict[str, Any] = {}
     if config.language != "auto":
         kwargs["language"] = config.language
-    segments, _info = model.transcribe(str(path), **kwargs)
-    return " ".join(segment.text.strip() for segment in segments if getattr(segment, "text", "").strip()).strip()
+    segments, info = model.transcribe(
+        str(path),
+        **kwargs,
+        vad_filter=True,
+        vad_parameters={"min_silence_duration_ms": 500},
+        condition_on_previous_text=False,
+        beam_size=5,
+    )
+    text = " ".join(segment.text.strip() for segment in segments if getattr(segment, "text", "").strip()).strip()
+    return text, info
 
 
 def safe_error(error: Exception) -> str:
@@ -130,6 +224,20 @@ def _load_model(config: VoiceConfig) -> object:
             kwargs["compute_type"] = config.stt_compute_type
         _MODEL_CACHE[key] = WhisperModel(config.stt_model, **kwargs)
     return _MODEL_CACHE[key]
+
+
+def _decode_pcm_samples(frames: bytes, sample_width: int) -> list[float]:
+    if sample_width == 1:
+        return [(sample - 128) / 128.0 for sample in frames]
+    if sample_width == 2:
+        count = len(frames) // 2
+        values = struct.unpack(f"<{count}h", frames[: count * 2])
+        return [value / 32768.0 for value in values]
+    if sample_width == 4:
+        count = len(frames) // 4
+        values = struct.unpack(f"<{count}i", frames[: count * 4])
+        return [value / 2147483648.0 for value in values]
+    return []
 
 
 def _sounddevice_device(value: str) -> str | int | None:

@@ -96,6 +96,7 @@ Voice input is optional and disabled by default. It is designed as a local, manu
 Commands:
 
 - `/voice status` - show voice config and optional dependency status.
+- `/voice diagnose` - record a voice sample, show recognized/corrected text and resolver diagnostics without executing it.
 - `/voice test` - record a short microphone sample, run STT, and print recognized text without executing it.
 - `/voice once` - record one short microphone command, print recognized text, then process it exactly like typed text.
 
@@ -111,25 +112,31 @@ ARVIS_STT_DEVICE=auto
 ARVIS_STT_COMPUTE_TYPE=auto
 ARVIS_MIC_DEVICE=
 ARVIS_VOICE_RECORD_SECONDS=6
-ARVIS_VOICE_LANGUAGE=auto
+ARVIS_VOICE_LANGUAGE=uk
+ARVIS_VOICE_ALLOWED_LANGUAGES=uk,ru,en,no
+ARVIS_VOICE_MIN_RMS=0.008
+ARVIS_VOICE_MIN_PEAK=0.03
+ARVIS_VOICE_DEBUG_SAVE_LAST=false
 ARVIS_VOICE_DUCKING_ENABLED=true
 ARVIS_VOICE_DUCK_PERCENT=15
 ARVIS_VOICE_DUCK_RESTORE=true
 ```
 
-Empty `ARVIS_MIC_DEVICE` uses the default microphone. Device names that look like monitor/output/loopback/desktop audio are rejected.
+Empty `ARVIS_MIC_DEVICE` uses the default microphone. Device names that look like monitor/output/loopback/desktop audio are rejected. For Ukrainian voice commands, keep `ARVIS_VOICE_LANGUAGE=uk`; switch it to `auto` only if you want mixed-language detection.
 
-Voice audio ducking is enabled by default for `/voice test` and `/voice once`. Before recording, Arvis reads the default audio sink with `wpctl`, lowers it only if it is currently louder than `ARVIS_VOICE_DUCK_PERCENT`, and restores the previous volume afterward. It does not pause media, mute audio, unmute previously muted audio, or capture desktop/system audio. If `wpctl` is missing or ducking fails, voice recording continues and Arvis prints a warning.
+Voice audio ducking is enabled by default for `/voice test` and `/voice once`. Arvis prepares the STT model first, then ducks audio only while the microphone is recording, restores volume, and only then transcribes. It does not pause media, mute audio, unmute previously muted audio, or capture desktop/system audio. If `wpctl` is missing or ducking fails, voice recording continues and Arvis prints a warning.
 
 Recommended first test:
 
 ```text
 /voice status
+/voice warmup
+/voice diagnose
 /voice test
 /voice once
 ```
 
-If voice dependencies are missing, text mode still works. Voice dependencies are imported lazily only when a voice command is used.
+`/voice warmup` loads/downloads the configured STT model without recording audio or ducking volume. If `ARVIS_VOICE_DEBUG_SAVE_LAST=true`, the last recorded microphone sample is copied to `.runtime/voice_debug/last_voice.wav` for local debugging. If voice dependencies are missing, text mode still works. Voice dependencies are imported lazily only when a voice command is used.
 
 ## Налаштування
 
@@ -162,7 +169,7 @@ OLLAMA_HOST=http://127.0.0.1:11434 ARVIS_MODEL=arvis python main.py
 - `MUSIC_FOLDER`
 - `DOWNLOADS_FOLDER`
 - `STEAM_COMMAND`, `SPOTIFY_COMMAND`, `BRAVE_COMMAND`, `DISCORD_COMMAND`, `TELEGRAM_COMMAND`
-- `ARVIS_VOICE_ENABLED`, `ARVIS_STT_BACKEND`, `ARVIS_STT_MODEL`, `ARVIS_STT_DEVICE`, `ARVIS_STT_COMPUTE_TYPE`, `ARVIS_MIC_DEVICE`, `ARVIS_VOICE_RECORD_SECONDS`, `ARVIS_VOICE_LANGUAGE`
+- `ARVIS_VOICE_ENABLED`, `ARVIS_STT_BACKEND`, `ARVIS_STT_MODEL`, `ARVIS_STT_DEVICE`, `ARVIS_STT_COMPUTE_TYPE`, `ARVIS_MIC_DEVICE`, `ARVIS_VOICE_RECORD_SECONDS`, `ARVIS_VOICE_LANGUAGE`, `ARVIS_VOICE_ALLOWED_LANGUAGES`, `ARVIS_VOICE_MIN_RMS`, `ARVIS_VOICE_MIN_PEAK`, `ARVIS_VOICE_DEBUG_SAVE_LAST`
 - `MINECRAFT_SERVER_ENABLED`, `MINECRAFT_SERVER_KEY`, `MINECRAFT_SERVER_NAME`, `MINECRAFT_SERVER_CWD`, `MINECRAFT_SERVER_COMMAND`
 
 Команди з env парсяться через `shlex.split()` і запускаються тільки як argv list з `shell=False`.
@@ -180,6 +187,8 @@ OLLAMA_HOST=http://127.0.0.1:11434 ARVIS_MODEL=arvis python main.py
 - `/doctor` - перевірити runtime, config, privacy safety, Ollama, actions і local storage.
 - `/actions` - показати підтримувані safe desktop actions.
 - `/voice status` - показати статус голосового режиму.
+- `/voice warmup` - завантажити STT model без запису голосу.
+- `/voice diagnose` - розпізнати голос і показати correction/resolver diagnostics без виконання.
 - `/voice test` - розпізнати тестовий голосовий зразок без виконання.
 - `/voice once` - розпізнати одну голосову команду і передати її в text pipeline.
 - `/history` - показати активну історію.

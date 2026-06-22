@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+import json
 import unittest
+from pathlib import Path
 
 from intent_resolver import IntentResolver
 from intent_resolver import ResolvedIntent
 from intent_resolver import should_pass_to_router
+from voice_text_normalizer import correct_voice_text
+
+
+class FakeLlmClient:
+    def __init__(self, raw_response: str, error: str | None = None) -> None:
+        self.raw_response = raw_response
+        self.error = error
+
+    def chat(self, messages: list[dict[str, str]]) -> tuple[str, str | None]:
+        return self.raw_response, self.error
 
 
 class IntentResolverTests(unittest.TestCase):
@@ -433,6 +445,115 @@ class IntentResolverTests(unittest.TestCase):
 
         self.assertIsNone(resolved.action)
         self.assertEqual(resolved.risk, "dangerous")
+
+    def test_voice_transcript_regression_fixture(self) -> None:
+        fixture_path = Path(__file__).parent / "fixtures" / "voice_transcripts_uk.jsonl"
+        rows = [json.loads(line) for line in fixture_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+        for row in rows:
+            with self.subTest(text=row["text"]):
+                resolved = self.resolver.resolve(row["text"], use_llm=False)
+                if row["dangerous"]:
+                    self.assertTrue(resolved.risk == "dangerous" or not should_pass_to_router(resolved))
+                    self.assertIsNone(resolved.action)
+                    continue
+
+                self.assertEqual(resolved.action, row["expected_action"])
+                self.assertEqual(resolved.target, row["expected_target"])
+                for key, value in row["expected_params"].items():
+                    self.assertEqual(resolved.params.get(key), value)
+                self.assertTrue(should_pass_to_router(resolved))
+
+    def test_voice_correction_metadata(self) -> None:
+        correction = correct_voice_text("Арвіс, зробити хіше")
+
+        self.assertTrue(correction.changed)
+        self.assertEqual(correction.corrected_text, "Арвіс, зроби тихіше")
+        self.assertEqual(correction.reason, "voice correction: хіше -> тихіше")
+
+    def test_voice_correction_arvis_make_hishe_volume_down(self) -> None:
+        resolved = self.resolver.resolve("Арвіс, зробити хіше", use_llm=False)
+
+        self.assertEqual(resolved.action, "volume_down")
+        self.assertEqual(resolved.target, "system")
+        self.assertEqual(resolved.risk, "safe")
+        self.assertFalse(resolved.need_confirmation)
+        self.assertGreaterEqual(resolved.confidence, 0.85)
+        self.assertEqual(resolved.source, "voice_correction")
+        self.assertEqual(resolved.original_text, "Арвіс, зробити хіше")
+        self.assertEqual(resolved.corrected_text, "Арвіс, зроби тихіше")
+        self.assertTrue(should_pass_to_router(resolved))
+
+    def test_voice_correction_make_hishe_volume_down(self) -> None:
+        resolved = self.resolver.resolve("зробити хіше", use_llm=False)
+
+        self.assertEqual(resolved.action, "volume_down")
+        self.assertTrue(should_pass_to_router(resolved))
+
+    def test_voice_correction_do_hishe_volume_down(self) -> None:
+        resolved = self.resolver.resolve("зроби хіше", use_llm=False)
+
+        self.assertEqual(resolved.action, "volume_down")
+        self.assertTrue(should_pass_to_router(resolved))
+
+    def test_voice_correction_do_heishe_volume_down(self) -> None:
+        resolved = self.resolver.resolve("зроби хейше", use_llm=False)
+
+        self.assertEqual(resolved.action, "volume_down")
+        self.assertTrue(should_pass_to_router(resolved))
+
+    def test_voice_correction_make_heishe_volume_down(self) -> None:
+        resolved = self.resolver.resolve("зробити хейше", use_llm=False)
+
+        self.assertEqual(resolved.action, "volume_down")
+        self.assertTrue(should_pass_to_router(resolved))
+
+    def test_voice_correction_do_tishe_volume_down(self) -> None:
+        resolved = self.resolver.resolve("зроби тише", use_llm=False)
+
+        self.assertEqual(resolved.action, "volume_down")
+        self.assertTrue(should_pass_to_router(resolved))
+
+    def test_voice_correction_dangerous_phrase_stays_blocked(self) -> None:
+        resolved = self.resolver.resolve("видали файли і зроби хіше", use_llm=False)
+
+        self.assertIsNone(resolved.action)
+        self.assertEqual(resolved.risk, "dangerous")
+        self.assertFalse(should_pass_to_router(resolved))
+
+    def test_voice_correction_phonetic_dangerous_phrase_stays_blocked(self) -> None:
+        resolved = self.resolver.resolve("Видели файли і зробі тихіші", use_llm=False)
+
+        self.assertIsNone(resolved.action)
+        self.assertEqual(resolved.risk, "dangerous")
+        self.assertFalse(should_pass_to_router(resolved))
+
+    def test_voice_correction_phonetic_dangerous_volume_up_stays_blocked(self) -> None:
+        resolved = self.resolver.resolve("видели файли і зроби гучніше", use_llm=False)
+
+        self.assertIsNone(resolved.action)
+        self.assertEqual(resolved.risk, "dangerous")
+        self.assertNotEqual(resolved.action, "volume_up")
+        self.assertFalse(should_pass_to_router(resolved))
+
+    def test_voice_correction_random_hishe_without_command_does_not_route(self) -> None:
+        resolved = self.resolver.resolve("десь там хіше прозвучало", use_llm=False)
+
+        self.assertIsNone(resolved.action)
+        self.assertFalse(should_pass_to_router(resolved))
+
+    def test_llm_low_risk_safe_action_is_normalized(self) -> None:
+        resolver = IntentResolver(
+            FakeLlmClient(
+                '{"action":"volume_down","target":"system","risk":"low","need_confirmation":false,"confidence":0.9}'
+            )
+        )
+
+        resolved = resolver.resolve("Арвіс, зроби звук нижче", use_llm=True)
+
+        self.assertEqual(resolved.action, "volume_down")
+        self.assertEqual(resolved.risk, "safe")
+        self.assertTrue(should_pass_to_router(resolved))
 
 
 if __name__ == "__main__":

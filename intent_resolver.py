@@ -10,6 +10,9 @@ from actions.apps import normalize_target
 from parameter_extraction import extract_first_number
 from parameter_extraction import get_int_param
 from schemas import ActionIntent
+from voice_text_normalizer import VoiceTextCorrection
+from voice_text_normalizer import correct_voice_text
+from voice_text_normalizer import has_dangerous_voice_text
 
 
 ALLOWED_ACTIONS = {
@@ -539,6 +542,10 @@ class ResolvedIntent:
     reason: str
     matched: str | None = None
     params: dict[str, object] = field(default_factory=dict)
+    original_text: str = ""
+    corrected_text: str = ""
+    correction_reason: str = ""
+    applied_corrections: list[str] = field(default_factory=list)
 
     def to_action_intent(self) -> ActionIntent | None:
         if self.action is None:
@@ -596,7 +603,7 @@ class IntentResolver:
         if payload is None:
             return None
 
-        return _resolved_from_payload(payload, source="llm_resolver")
+        return _resolved_from_payload(payload, source="llm_resolver", user_text=user_text)
 
 
 def resolve_with_heuristics(
@@ -604,7 +611,6 @@ def resolve_with_heuristics(
     command_history: list[dict[str, object]] | None = None,
 ) -> ResolvedIntent:
     command_history = command_history or []
-    text = _normalize_text(user_text)
 
     if has_dangerous_text(user_text):
         return ResolvedIntent(
@@ -618,49 +624,56 @@ def resolve_with_heuristics(
             matched="dangerous",
         )
 
+    correction = correct_voice_text(user_text)
+    text = _normalize_text(correction.corrected_text)
+
+    voice_direct = _resolve_voice_corrected_direct(text, correction)
+    if voice_direct is not None:
+        return voice_direct
+
     minecraft = _resolve_minecraft(text)
     if minecraft is not None:
-        return minecraft
+        return _with_voice_correction(minecraft, correction)
 
     negative_next = _resolve_negative_next(text)
     if negative_next is not None:
-        return negative_next
+        return _with_voice_correction(negative_next, correction)
 
     like = _resolve_like(text)
     if like is not None:
-        return like
+        return _with_voice_correction(like, correction)
 
     media_status = _resolve_media_status(text)
     if media_status is not None:
-        return media_status
+        return _with_voice_correction(media_status, correction)
 
     seek = _resolve_seek(text)
     if seek is not None:
-        return seek
+        return _with_voice_correction(seek, correction)
 
     repeat = _resolve_repeat(text)
     if repeat is not None:
-        return repeat
+        return _with_voice_correction(repeat, correction)
 
     shuffle = _resolve_shuffle(text)
     if shuffle is not None:
-        return shuffle
+        return _with_voice_correction(shuffle, correction)
 
     media = _resolve_media(text)
     if media is not None:
-        return media
+        return _with_voice_correction(media, correction)
 
     volume = _resolve_volume(text)
     if volume is not None:
-        return volume
+        return _with_voice_correction(volume, correction)
 
     app = _resolve_app(text)
     if app is not None:
-        return app
+        return _with_voice_correction(app, correction)
 
     context = _resolve_context(text, command_history)
     if context is not None:
-        return context
+        return _with_voice_correction(context, correction)
 
     confidence = 0.45 if looks_like_command(user_text) else 0.2
     return ResolvedIntent(
@@ -675,6 +688,49 @@ def resolve_with_heuristics(
     )
 
 
+def _with_voice_correction(resolved: ResolvedIntent, correction: VoiceTextCorrection) -> ResolvedIntent:
+    if not correction.changed or resolved.action is None:
+        return resolved
+    resolved.source = "voice_correction"
+    resolved.confidence = max(resolved.confidence, 0.85)
+    resolved.original_text = correction.original_text
+    resolved.corrected_text = correction.corrected_text
+    resolved.correction_reason = correction.reason
+    resolved.applied_corrections = list(correction.applied_corrections)
+    resolved.reason = f"{correction.reason}; {resolved.reason}"
+    return resolved
+
+
+def _resolve_voice_corrected_direct(text: str, correction: VoiceTextCorrection) -> ResolvedIntent | None:
+    if not correction.changed:
+        return None
+
+    checks = [
+        ("volume_up", "system", ("гучніше", "голосніше", "гучності", "підніми звук")),
+        ("volume_down", "system", ("тихіше", "потихіше", "приглуши")),
+        ("music_next", "media", ("скипни", "наступну пісню")),
+        ("volume_unmute", "system", ("поверни звук",)),
+        ("volume_mute", "system", ("вимкни звук",)),
+    ]
+    for action, target, phrases in checks:
+        if any(phrase in text for phrase in phrases):
+            return _with_voice_correction(
+                ResolvedIntent(
+                    action=action,
+                    target=target,
+                    risk="safe",
+                    need_confirmation=False,
+                    confidence=0.9,
+                    source="heuristic_user_text",
+                    reason=f"Corrected voice text maps directly to `{action}`.",
+                    matched=f"voice_correction:{action}",
+                    params=_params_for_action(action, text),
+                ),
+                correction,
+            )
+    return None
+
+
 def looks_like_command(user_text: str) -> bool:
     text = _normalize_text(user_text)
     return _contains_any(text, COMMAND_HINTS)
@@ -682,7 +738,7 @@ def looks_like_command(user_text: str) -> bool:
 
 def has_dangerous_text(user_text: str) -> bool:
     text = _normalize_text(user_text)
-    return _contains_any(text, DANGEROUS_PHRASES)
+    return _contains_any(text, DANGEROUS_PHRASES) or has_dangerous_voice_text(user_text)
 
 
 def should_pass_to_router(resolved: ResolvedIntent) -> bool:
@@ -1054,7 +1110,7 @@ def _default_target_for_action(action: str) -> str:
     return ""
 
 
-def _resolved_from_payload(payload: dict[str, Any], source: str) -> ResolvedIntent | None:
+def _resolved_from_payload(payload: dict[str, Any], source: str, user_text: str = "") -> ResolvedIntent | None:
     raw_action = payload.get("action")
     action = raw_action if isinstance(raw_action, str) else None
     if action is not None and action not in ALLOWED_ACTIONS:
@@ -1065,11 +1121,18 @@ def _resolved_from_payload(payload: dict[str, Any], source: str) -> ResolvedInte
     if target and target not in ALLOWED_TARGETS:
         target = None
 
+    need_confirmation = bool(payload.get("need_confirmation", False))
     risk = str(payload.get("risk") or "safe").lower()
+    if (
+        risk in {"low", "minimal", "none"}
+        and action in ALLOWED_ACTIONS
+        and not need_confirmation
+        and not has_dangerous_text(user_text)
+    ):
+        risk = "safe"
     if risk != "safe":
         action = None
 
-    need_confirmation = bool(payload.get("need_confirmation", False))
     if need_confirmation:
         action = None
 

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import Mock
 from unittest.mock import patch
 
 import doctor
 import main
 from voice_config import VoiceConfig
+from voice_input import VoiceDependencyStatus
 from voice_input import VoiceTranscriptionResult
 
 
@@ -169,6 +171,37 @@ class MainReloadCommandTests(unittest.TestCase):
         show_voice_status.assert_called_once()
         router.route.assert_not_called()
 
+    def test_voice_warmup_loads_model_without_recording_or_ducking(self) -> None:
+        router = Mock()
+        router.dry_run = True
+
+        with patch("main.load_voice_config", return_value=self._voice_config(enabled=True)), patch(
+            "main.preflight_voice_capture",
+            return_value=None,
+        ), patch("main.ensure_stt_model_loaded") as warmup, patch("main.VoiceDucking") as ducking, patch(
+            "main.record_microphone_to_temp_wav"
+        ) as record:
+            result = main.handle_command("/voice warmup", [], "summary", False, router, [], 7)
+
+        self.assertTrue(result.handled)
+        warmup.assert_called_once()
+        ducking.assert_not_called()
+        record.assert_not_called()
+        router.route.assert_not_called()
+
+    def test_voice_warmup_keyboard_interrupt_is_handled(self) -> None:
+        router = Mock()
+        router.dry_run = True
+
+        with patch("main.load_voice_config", return_value=self._voice_config(enabled=True)), patch(
+            "main.preflight_voice_capture",
+            return_value=None,
+        ), patch("main.ensure_stt_model_loaded", side_effect=KeyboardInterrupt):
+            result = main.handle_command("/voice warmup", [], "summary", False, router, [], 7)
+
+        self.assertTrue(result.handled)
+        router.route.assert_not_called()
+
     def test_voice_test_disabled_does_not_route(self) -> None:
         router = Mock()
         router.dry_run = True
@@ -193,6 +226,52 @@ class MainReloadCommandTests(unittest.TestCase):
         process_text.assert_not_called()
         router.route.assert_not_called()
 
+    def test_voice_test_missing_dependencies_does_not_duck_or_record(self) -> None:
+        router = Mock()
+        router.dry_run = True
+        process_text = Mock()
+
+        with patch("main.load_voice_config", return_value=self._voice_config(enabled=True)), patch(
+            "voice_input.get_voice_dependency_status",
+            return_value=VoiceDependencyStatus(False, False, False),
+        ), patch("main.VoiceDucking") as ducking, patch("main.ensure_stt_model_loaded") as warmup, patch(
+            "main.record_microphone_to_temp_wav"
+        ) as record, patch(
+            "voice_ducking.subprocess.run"
+        ) as wpctl:
+            result = main.handle_command("/voice test", [], "summary", False, router, [], 7, process_text)
+
+        self.assertTrue(result.handled)
+        ducking.assert_not_called()
+        warmup.assert_not_called()
+        record.assert_not_called()
+        wpctl.assert_not_called()
+        process_text.assert_not_called()
+        router.route.assert_not_called()
+
+    def test_voice_once_missing_dependencies_does_not_duck_or_record(self) -> None:
+        router = Mock()
+        router.dry_run = True
+        process_text = Mock()
+
+        with patch("main.load_voice_config", return_value=self._voice_config(enabled=True)), patch(
+            "voice_input.get_voice_dependency_status",
+            return_value=VoiceDependencyStatus(False, False, False),
+        ), patch("main.VoiceDucking") as ducking, patch("main.ensure_stt_model_loaded") as warmup, patch(
+            "main.record_microphone_to_temp_wav"
+        ) as record, patch(
+            "voice_ducking.subprocess.run"
+        ) as wpctl:
+            result = main.handle_command("/voice once", [], "summary", False, router, [], 7, process_text)
+
+        self.assertTrue(result.handled)
+        ducking.assert_not_called()
+        warmup.assert_not_called()
+        record.assert_not_called()
+        wpctl.assert_not_called()
+        process_text.assert_not_called()
+        router.route.assert_not_called()
+
     def test_voice_test_recognizes_but_does_not_execute_pipeline(self) -> None:
         router = Mock()
         router.dry_run = True
@@ -200,7 +279,13 @@ class MainReloadCommandTests(unittest.TestCase):
         FakeVoiceDucking.instances.clear()
 
         with patch("main.load_voice_config", return_value=self._voice_config(enabled=True)), patch(
-            "main.transcribe_once",
+            "main.preflight_voice_capture",
+            return_value=None,
+        ), patch("main.ensure_stt_model_loaded"), patch(
+            "main.record_microphone_to_temp_wav",
+            return_value=Path("voice.wav"),
+        ), patch(
+            "main.transcribe_recorded_audio",
             return_value=VoiceTranscriptionResult(True, text="постав звук на 30"),
         ), patch("main.VoiceDucking", FakeVoiceDucking):
             result = main.handle_command("/voice test", [], "summary", False, router, [], 7, process_text)
@@ -219,7 +304,13 @@ class MainReloadCommandTests(unittest.TestCase):
         FakeVoiceDucking.instances.clear()
 
         with patch("main.load_voice_config", return_value=self._voice_config(enabled=True)), patch(
-            "main.transcribe_once",
+            "main.preflight_voice_capture",
+            return_value=None,
+        ), patch("main.ensure_stt_model_loaded"), patch(
+            "main.record_microphone_to_temp_wav",
+            return_value=Path("voice.wav"),
+        ), patch(
+            "main.transcribe_recorded_audio",
             return_value=VoiceTranscriptionResult(True, text="постав звук на 30"),
         ), patch("main.VoiceDucking", FakeVoiceDucking):
             result = main.handle_command("/voice once", [], "summary", False, router, [], 7, process_text)
@@ -230,6 +321,112 @@ class MainReloadCommandTests(unittest.TestCase):
         process_text.assert_called_once_with("постав звук на 30")
         self.assertEqual(len(FakeVoiceDucking.instances), 1)
         self.assertTrue(FakeVoiceDucking.instances[0].entered)
+        self.assertTrue(FakeVoiceDucking.instances[0].exited)
+
+    def test_voice_once_rejects_non_command_transcript(self) -> None:
+        router = Mock()
+        router.dry_run = True
+        process_text = Mock()
+        FakeVoiceDucking.instances.clear()
+
+        with patch("main.load_voice_config", return_value=self._voice_config(enabled=True)), patch(
+            "main.preflight_voice_capture",
+            return_value=None,
+        ), patch("main.ensure_stt_model_loaded"), patch(
+            "main.record_microphone_to_temp_wav",
+            return_value=Path("voice.wav"),
+        ), patch(
+            "main.transcribe_recorded_audio",
+            return_value=VoiceTranscriptionResult(True, text="Арвіс, ти мене чуєш?"),
+        ), patch("main.VoiceDucking", FakeVoiceDucking):
+            result = main.handle_command("/voice once", [], "summary", False, router, [], 7, process_text)
+
+        self.assertTrue(result.handled)
+        process_text.assert_not_called()
+        router.route.assert_not_called()
+
+    def test_voice_diagnose_records_and_does_not_execute_pipeline(self) -> None:
+        router = Mock()
+        router.dry_run = True
+        process_text = Mock()
+        FakeVoiceDucking.instances.clear()
+
+        with patch("main.load_voice_config", return_value=self._voice_config(enabled=True)), patch(
+            "main.preflight_voice_capture",
+            return_value=None,
+        ), patch("main.ensure_stt_model_loaded"), patch(
+            "main.record_microphone_to_temp_wav",
+            return_value=Path("voice.wav"),
+        ), patch(
+            "main.transcribe_recorded_audio",
+            return_value=VoiceTranscriptionResult(True, text="зроби хіше", debug_audio_path=".runtime/voice_debug/last_voice.wav"),
+        ), patch("main.VoiceDucking", FakeVoiceDucking), patch("main.show_voice_diagnose_result") as diagnose:
+            result = main.handle_command("/voice diagnose", [], "summary", False, router, [], 7, process_text)
+
+        self.assertTrue(result.handled)
+        diagnose.assert_called_once_with("зроби хіше")
+        process_text.assert_not_called()
+        router.route.assert_not_called()
+        self.assertEqual(len(FakeVoiceDucking.instances), 1)
+
+    def test_show_voice_diagnose_result_prints_table(self) -> None:
+        with patch("main.console.print") as print_call:
+            main.show_voice_diagnose_result("зроби хіше")
+
+        print_call.assert_called_once()
+
+    def test_ducking_wraps_recording_not_warmup_or_transcription(self) -> None:
+        router = Mock()
+        router.dry_run = True
+        events: list[str] = []
+
+        class OrderedDucking(FakeVoiceDucking):
+            def __enter__(self) -> FakeVoiceDucking:
+                events.append("duck_enter")
+                return super().__enter__()
+
+            def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+                events.append("duck_exit")
+                return super().__exit__(exc_type, exc, tb)
+
+        def warmup(config: VoiceConfig) -> None:
+            events.append("warmup")
+
+        def record(config: VoiceConfig) -> Path:
+            events.append("record")
+            return Path("voice.wav")
+
+        def transcribe(path: Path, config: VoiceConfig) -> VoiceTranscriptionResult:
+            events.append("transcribe")
+            return VoiceTranscriptionResult(True, text="постав звук на 30")
+
+        with patch("main.load_voice_config", return_value=self._voice_config(enabled=True)), patch(
+            "main.preflight_voice_capture",
+            return_value=None,
+        ), patch("main.ensure_stt_model_loaded", side_effect=warmup), patch(
+            "main.record_microphone_to_temp_wav",
+            side_effect=record,
+        ), patch("main.transcribe_recorded_audio", side_effect=transcribe), patch("main.VoiceDucking", OrderedDucking):
+            main.handle_command("/voice test", [], "summary", False, router, [], 7, Mock())
+
+        self.assertEqual(events, ["warmup", "duck_enter", "record", "duck_exit", "transcribe"])
+
+    def test_keyboard_interrupt_during_recording_restores_ducking(self) -> None:
+        router = Mock()
+        router.dry_run = True
+        FakeVoiceDucking.instances.clear()
+
+        with patch("main.load_voice_config", return_value=self._voice_config(enabled=True)), patch(
+            "main.preflight_voice_capture",
+            return_value=None,
+        ), patch("main.ensure_stt_model_loaded"), patch(
+            "main.record_microphone_to_temp_wav",
+            side_effect=KeyboardInterrupt,
+        ), patch("main.VoiceDucking", FakeVoiceDucking):
+            result = main.handle_command("/voice test", [], "summary", False, router, [], 7, Mock())
+
+        self.assertTrue(result.handled)
+        self.assertEqual(len(FakeVoiceDucking.instances), 1)
         self.assertTrue(FakeVoiceDucking.instances[0].exited)
 
     def _voice_config(self, enabled: bool) -> VoiceConfig:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import shlex
 import sys
 from collections.abc import Callable
+from dataclasses import replace
 
 from rich import box
 from rich.console import Console
@@ -37,8 +38,12 @@ from runtime_state import save_reload_state
 from voice_config import load_voice_config
 from voice_config import voice_disabled_message
 from voice_ducking import VoiceDucking
+from voice_text_normalizer import correct_voice_text
+from voice_input import ensure_stt_model_loaded
 from voice_input import get_voice_dependency_status
-from voice_input import transcribe_once
+from voice_input import preflight_voice_capture
+from voice_input import record_microphone_to_temp_wav
+from voice_input import transcribe_recorded_audio
 
 
 MAX_HISTORY_MESSAGES = 40
@@ -206,7 +211,11 @@ def handle_command(
         show_voice_status()
         return ReplCommandResult(True, False, session_summary, debug, command_counter)
 
-    if command in {"/voice test", "/voice once"}:
+    if command == "/voice warmup":
+        handle_voice_warmup_command()
+        return ReplCommandResult(True, False, session_summary, debug, command_counter)
+
+    if command in {"/voice test", "/voice once", "/voice diagnose"}:
         updated_summary, updated_counter = handle_voice_capture_command(command, session_summary, command_counter, process_text)
         return ReplCommandResult(True, False, updated_summary, debug, updated_counter)
 
@@ -529,6 +538,8 @@ def show_help() -> None:
     table.add_row("/doctor", "Перевірити локальну конфігурацію і готовність Арвіса")
     table.add_row("/actions", "Показати підтримувані desktop actions")
     table.add_row("/voice status", "Показати статус голосового режиму")
+    table.add_row("/voice warmup", "Завантажити STT model без запису голосу")
+    table.add_row("/voice diagnose", "Розпізнати голос і показати correction/resolver diagnostics")
     table.add_row("/voice test", "Записати тест голосу без виконання команди")
     table.add_row("/voice once", "Записати одну голосову команду і обробити як текст")
     table.add_row("/history", "Показати активну історію")
@@ -633,6 +644,10 @@ def show_voice_status() -> None:
     table.add_row("mic device", config.mic_device or "(default input)")
     table.add_row("record seconds", str(config.record_seconds))
     table.add_row("language", config.language)
+    table.add_row("allowed languages", ", ".join(config.allowed_languages))
+    table.add_row("min rms", str(config.min_rms))
+    table.add_row("min peak", str(config.min_peak))
+    table.add_row("debug save last", "enabled" if config.debug_save_last else "disabled")
     table.add_row("ducking", "enabled" if config.ducking_enabled else "disabled")
     table.add_row("duck percent", str(config.duck_percent))
     table.add_row("duck restore", "enabled" if config.duck_restore else "disabled")
@@ -644,6 +659,28 @@ def show_voice_status() -> None:
         console.print(f"[yellow]{voice_disabled_message()}[/yellow]")
 
 
+def handle_voice_warmup_command() -> None:
+    config = load_voice_config()
+    preflight = preflight_voice_capture(config)
+    if preflight is not None:
+        if preflight.no_speech:
+            console.print("[yellow]Не почув команди, сер.[/yellow]")
+        else:
+            console.print(f"[red]{_voice_error_message(preflight.error)}[/red]")
+        return
+
+    console.print("[cyan]Готую STT model, сер. Перший запуск може зайняти кілька хвилин.[/cyan]")
+    try:
+        ensure_stt_model_loaded(config)
+    except KeyboardInterrupt:
+        console.print("[yellow]Голосову команду перервано, сер.[/yellow]")
+        return
+    except Exception as error:
+        console.print(f"[red]Не зміг підготувати STT model, сер: {str(error).replace(chr(10), ' ')[:240]}[/red]")
+        return
+    console.print("[green]STT model готова, сер.[/green]")
+
+
 def handle_voice_capture_command(
     command: str,
     session_summary: str,
@@ -651,20 +688,56 @@ def handle_voice_capture_command(
     process_text: Callable[[str], tuple[str, int]] | None,
 ) -> tuple[str, int]:
     config = load_voice_config()
-    if not config.enabled:
-        console.print(f"[yellow]{voice_disabled_message()}[/yellow]")
+    if command == "/voice diagnose":
+        config = replace(config, debug_save_last=True)
+
+    preflight = preflight_voice_capture(config)
+    if preflight is not None:
+        if preflight.no_speech:
+            console.print("[yellow]Не почув команди, сер.[/yellow]")
+        else:
+            console.print(f"[red]{_voice_error_message(preflight.error)}[/red]")
         return session_summary, command_counter
 
+    try:
+        ensure_stt_model_loaded(config)
+    except KeyboardInterrupt:
+        console.print("[yellow]Голосову команду перервано, сер.[/yellow]")
+        return session_summary, command_counter
+    except Exception as error:
+        console.print(f"[red]Не зміг підготувати STT model, сер: {str(error).replace(chr(10), ' ')[:240]}[/red]")
+        return session_summary, command_counter
+
+    temp_path = None
     ducking = VoiceDucking(config, warn=lambda message: console.print(f"[yellow]{message}[/yellow]"))
-    with ducking:
-        if ducking.applied:
-            console.print("[cyan]Приглушив звук і слухаю, сер...[/cyan]")
-        else:
-            console.print("[cyan]Слухаю, сер...[/cyan]")
-        result = transcribe_once(config)
+    try:
+        with ducking:
+            if ducking.applied:
+                console.print("[cyan]Приглушив звук і слухаю, сер...[/cyan]")
+            else:
+                console.print("[cyan]Слухаю, сер...[/cyan]")
+            temp_path = record_microphone_to_temp_wav(config)
+    except KeyboardInterrupt:
+        console.print("[yellow]Голосову команду перервано, сер.[/yellow]")
+        return session_summary, command_counter
+    except Exception as error:
+        console.print(f"[red]Не зміг розпізнати голос, сер: {str(error).replace(chr(10), ' ')[:240]}[/red]")
+        return session_summary, command_counter
 
     if ducking.restored:
         console.print("[green]Повернув гучність назад, сер.[/green]")
+
+    try:
+        result = transcribe_recorded_audio(temp_path, config)
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    if result.debug_audio_path:
+        console.print(f"[cyan]Debug audio збережено: {result.debug_audio_path}[/cyan]")
 
     if result.no_speech:
         console.print("[yellow]Не почув команди, сер.[/yellow]")
@@ -679,7 +752,15 @@ def handle_voice_capture_command(
         return session_summary, command_counter
 
     console.print(f"[green]Розпізнав: {recognized_text}[/green]")
+    if command == "/voice diagnose":
+        show_voice_diagnose_result(recognized_text)
+        return session_summary, command_counter
+
     if command == "/voice test":
+        return session_summary, command_counter
+
+    if not _should_route_voice_transcript(recognized_text):
+        console.print("[yellow]Відкинув розпізнаний текст, бо мова/якість схожа на шум, сер.[/yellow]")
         return session_summary, command_counter
 
     if process_text is None:
@@ -688,11 +769,38 @@ def handle_voice_capture_command(
     return process_text(recognized_text)
 
 
+def _should_route_voice_transcript(text: str) -> bool:
+    normalized = " ".join(text.strip().lower().replace("?", " ").replace("!", " ").split())
+    diagnostic_phrases = ("ти мене чуєш", "чуєш мене", "мене чуєш")
+    if any(phrase in normalized for phrase in diagnostic_phrases):
+        return False
+    return looks_like_command(text)
+
+
+def show_voice_diagnose_result(recognized_text: str) -> None:
+    correction = correct_voice_text(recognized_text)
+    resolved = IntentResolver().resolve(recognized_text, use_llm=False)
+    table = Table(title="Voice diagnose", box=box.SIMPLE)
+    table.add_column("Поле", style="cyan", no_wrap=True)
+    table.add_column("Значення")
+    table.add_row("recognized_text", recognized_text)
+    table.add_row("corrected_text", correction.corrected_text)
+    table.add_row("corrections", "; ".join(correction.applied_corrections) or "")
+    table.add_row("action", resolved.action or "")
+    table.add_row("target", resolved.target or "")
+    table.add_row("confidence", f"{resolved.confidence:.2f}")
+    table.add_row("risk", resolved.risk)
+    table.add_row("pass_to_router", str(should_pass_to_router(resolved)))
+    console.print(table)
+
+
 def _voice_error_message(error: str) -> str:
     if error == "unsafe_audio_device":
         return "Цей audio device схожий на monitor/output source, сер. Я не буду слухати звук системи."
     if error == "voice_disabled":
         return voice_disabled_message()
+    if error == "unclear_voice":
+        return "Відкинув розпізнаний текст, бо мова/якість схожа на шум, сер."
     safe_error = (error or "unknown error").replace("\n", " ")[:240]
     return f"Не зміг розпізнати голос, сер: {safe_error}"
 
@@ -731,6 +839,14 @@ def show_intent_resolver(resolved: ResolvedIntent) -> None:
     table.add_row("target", resolved.target or "")
     if resolved.params:
         table.add_row("params", str(resolved.params))
+    if resolved.original_text:
+        table.add_row("original_text", resolved.original_text)
+    if resolved.corrected_text:
+        table.add_row("corrected_text", resolved.corrected_text)
+    if resolved.correction_reason:
+        table.add_row("correction_reason", resolved.correction_reason)
+    if resolved.applied_corrections:
+        table.add_row("applied_corrections", "; ".join(resolved.applied_corrections))
     table.add_row("confidence", f"{resolved.confidence:.2f}")
     table.add_row("risk", resolved.risk)
     table.add_row("need_confirmation", str(resolved.need_confirmation))

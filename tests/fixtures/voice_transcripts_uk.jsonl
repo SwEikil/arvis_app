@@ -1,0 +1,22 @@
+{"text":"зроби вучніше","expected_action":"volume_up","expected_target":"system","expected_params":{"step_percent":5},"dangerous":false}
+{"text":"Зроби вучніше","expected_action":"volume_up","expected_target":"system","expected_params":{"step_percent":5},"dangerous":false}
+{"text":"зроби голесніше","expected_action":"volume_up","expected_target":"system","expected_params":{"step_percent":5},"dangerous":false}
+{"text":"Зроби учніше","expected_action":"volume_up","expected_target":"system","expected_params":{"step_percent":5},"dangerous":false}
+{"text":"Піднимемо звук","expected_action":"volume_up","expected_target":"system","expected_params":{"step_percent":5},"dangerous":false}
+{"text":"Додай п'ять відсотків дулучності","expected_action":"volume_up","expected_target":"system","expected_params":{"step_percent":5},"dangerous":false}
+{"text":"зробити хіше","expected_action":"volume_down","expected_target":"system","expected_params":{"step_percent":5},"dangerous":false}
+{"text":"зроби хіше","expected_action":"volume_down","expected_target":"system","expected_params":{"step_percent":5},"dangerous":false}
+{"text":"зроби хейше","expected_action":"volume_down","expected_target":"system","expected_params":{"step_percent":5},"dangerous":false}
+{"text":"зробити хейше","expected_action":"volume_down","expected_target":"system","expected_params":{"step_percent":5},"dangerous":false}
+{"text":"зроби тише","expected_action":"volume_down","expected_target":"system","expected_params":{"step_percent":5},"dangerous":false}
+{"text":"Постав на паузу","expected_action":"music_pause","expected_target":"media","expected_params":{},"dangerous":false}
+{"text":"Скип на музику","expected_action":"music_next","expected_target":"media","expected_params":{},"dangerous":false}
+{"text":"Стіпні музику","expected_action":"music_next","expected_target":"media","expected_params":{},"dangerous":false}
+{"text":"Давай наступно писемо","expected_action":"music_next","expected_target":"media","expected_params":{},"dangerous":false}
+{"text":"Давай наступну пісню","expected_action":"music_next","expected_target":"media","expected_params":{},"dangerous":false}
+{"text":"Поверне звук","expected_action":"volume_unmute","expected_target":"system","expected_params":{},"dangerous":false}
+{"text":"Поверний звук","expected_action":"volume_unmute","expected_target":"system","expected_params":{},"dangerous":false}
+{"text":"Поверни звук","expected_action":"volume_unmute","expected_target":"system","expected_params":{},"dangerous":false}
+{"text":"Вимкне звук","expected_action":"volume_mute","expected_target":"system","expected_params":{},"dangerous":false}
+{"text":"Вимкни звук","expected_action":"volume_mute","expected_target":"system","expected_params":{},"dangerous":false}
+{"text":"Видели файли і зробі тихіші","expected_action":null,"expected_target":null,"expected_params":{},"dangerous":true}
