@@ -46,6 +46,12 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(reloaded.APP_COMMANDS["spotify"][0], ["flatpak", "run", "com.spotify.Client"])
 
+    def test_website_command_from_env_is_shlex_split(self) -> None:
+        with patch.dict(os.environ, {"YOUTUBE_COMMAND": "xdg-open https://www.youtube.com/"}, clear=True):
+            reloaded = importlib.reload(config)
+
+        self.assertEqual(reloaded.APP_COMMANDS["youtube"][0], ["xdg-open", "https://www.youtube.com/"])
+
     def test_empty_app_command_uses_fallback(self) -> None:
         with patch.dict(os.environ, {"BRAVE_COMMAND": ""}, clear=True):
             reloaded = importlib.reload(config)

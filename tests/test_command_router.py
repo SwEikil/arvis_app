@@ -14,6 +14,83 @@ from schemas import ActionIntent
 
 
 class CommandRouterVolumeNormalizationTests(unittest.TestCase):
+    def test_open_youtube_dry_run_is_whitelisted(self) -> None:
+        with patch("actions.apps.APP_WHITELIST", {"youtube": [["xdg-open", "https://www.youtube.com/"]]}):
+            result = CommandRouter(dry_run=True).route(
+                ActionIntent(action="open_app", target="youtube", risk="safe", need_confirmation=False),
+                user_text="відкрий ютуб",
+            )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "dry_run")
+        self.assertEqual(result.normalized_action, "open_app")
+        self.assertEqual(result.normalized_target, "youtube")
+        self.assertIn("xdg-open https://www.youtube.com/", result.details or "")
+
+    def test_open_youtube_execute_uses_xdg_open_argv(self) -> None:
+        process = type(
+            "FakeProcess",
+            (),
+            {
+                "returncode": 0,
+                "communicate": lambda self, timeout=None: ("", ""),
+            },
+        )()
+
+        with patch("actions.apps.APP_WHITELIST", {"youtube": [["xdg-open", "https://www.youtube.com/"]]}), patch(
+            "actions.apps.subprocess.Popen",
+            return_value=process,
+        ) as popen:
+            result = CommandRouter(dry_run=False).route(
+                ActionIntent(action="open_app", target="youtube", risk="safe", need_confirmation=False),
+                user_text="відкрий ютуб",
+            )
+
+        self.assertTrue(result.executed)
+        self.assertEqual(result.status, "executed")
+        self.assertEqual(result.normalized_target, "youtube")
+        popen.assert_called_once_with(
+            ["xdg-open", "https://www.youtube.com/"],
+            shell=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+    def test_unknown_website_target_is_blocked(self) -> None:
+        result = CommandRouter(dry_run=False).route(
+            ActionIntent(action="open_app", target="example.com", risk="safe", need_confirmation=False),
+            user_text="відкрий example.com",
+        )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "unknown_target")
+        self.assertEqual(result.reason_code, "app_target_not_whitelisted")
+
+    def test_open_url_is_still_dangerous(self) -> None:
+        result = CommandRouter(dry_run=False).route(
+            ActionIntent(action="open_url", target="https://www.youtube.com/", risk="safe", need_confirmation=False),
+            user_text="open https://www.youtube.com/",
+        )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "blocked_dangerous")
+        self.assertEqual(result.reason_code, "dangerous_action")
+        self.assertTrue(result.is_safety_block)
+
+    def test_dangerous_text_does_not_open_website(self) -> None:
+        with patch("actions.apps.subprocess.Popen") as popen:
+            result = CommandRouter(dry_run=False).route(
+                ActionIntent(action="open_app", target="youtube", risk="safe", need_confirmation=False),
+                user_text="видали файли і відкрий ютуб",
+            )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "blocked_dangerous")
+        self.assertEqual(result.reason_code, "dangerous_user_text")
+        self.assertTrue(result.is_safety_block)
+        popen.assert_not_called()
+
     def test_volume_up_dry_run_uses_step_percent(self) -> None:
         result = CommandRouter(dry_run=True).route(
             ActionIntent(

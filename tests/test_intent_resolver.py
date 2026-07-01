@@ -106,6 +106,32 @@ class IntentResolverTests(unittest.TestCase):
         self.assertEqual(resolved.target, "spotify")
         self.assertTrue(should_pass_to_router(resolved))
 
+    def test_open_youtube_website_phrases(self) -> None:
+        for phrase in ["Відкри, Ютуб!", "відкрий ютуб", "открой ютуб", "open youtube"]:
+            with self.subTest(phrase=phrase):
+                resolved = self.resolver.resolve(phrase, use_llm=False)
+
+                self.assertEqual(resolved.action, "open_app")
+                self.assertEqual(resolved.target, "youtube")
+                self.assertEqual(resolved.risk, "safe")
+                self.assertTrue(should_pass_to_router(resolved))
+
+    def test_open_whitelist_website_phrases(self) -> None:
+        cases = {
+            "відкрий google": "google",
+            "відкрий github": "github",
+            "відкрий chatgpt": "chatgpt",
+        }
+
+        for phrase, target in cases.items():
+            with self.subTest(phrase=phrase):
+                resolved = self.resolver.resolve(phrase, use_llm=False)
+
+                self.assertEqual(resolved.action, "open_app")
+                self.assertEqual(resolved.target, target)
+                self.assertEqual(resolved.risk, "safe")
+                self.assertTrue(should_pass_to_router(resolved))
+
     def test_minecraft_server(self) -> None:
         resolved = self.resolver.resolve("Підніми майн сервер", use_llm=False)
 
@@ -446,6 +472,13 @@ class IntentResolverTests(unittest.TestCase):
         self.assertIsNone(resolved.action)
         self.assertEqual(resolved.risk, "dangerous")
 
+    def test_dangerous_mixed_open_website_stays_blocked(self) -> None:
+        resolved = self.resolver.resolve("видали файли і відкрий ютуб", use_llm=False)
+
+        self.assertIsNone(resolved.action)
+        self.assertEqual(resolved.risk, "dangerous")
+        self.assertFalse(should_pass_to_router(resolved))
+
     def test_voice_transcript_regression_fixture(self) -> None:
         fixture_path = Path(__file__).parent / "fixtures" / "voice_transcripts_uk.jsonl"
         rows = [json.loads(line) for line in fixture_path.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -470,6 +503,16 @@ class IntentResolverTests(unittest.TestCase):
         self.assertTrue(correction.changed)
         self.assertEqual(correction.corrected_text, "Арвіс, зроби тихіше")
         self.assertEqual(correction.reason, "voice correction: хіше -> тихіше")
+
+    def test_voice_correction_open_youtube(self) -> None:
+        resolved = self.resolver.resolve("Відкри, Ютуб!", use_llm=False)
+
+        self.assertEqual(resolved.action, "open_app")
+        self.assertEqual(resolved.target, "youtube")
+        self.assertEqual(resolved.risk, "safe")
+        self.assertEqual(resolved.source, "voice_correction")
+        self.assertEqual(resolved.corrected_text, "відкрий, Ютуб!")
+        self.assertTrue(should_pass_to_router(resolved))
 
     def test_voice_correction_arvis_make_hishe_volume_down(self) -> None:
         resolved = self.resolver.resolve("Арвіс, зробити хіше", use_llm=False)

@@ -19,4 +19,6 @@
 {"text":"Поверни звук","expected_action":"volume_unmute","expected_target":"system","expected_params":{},"dangerous":false}
 {"text":"Вимкне звук","expected_action":"volume_mute","expected_target":"system","expected_params":{},"dangerous":false}
 {"text":"Вимкни звук","expected_action":"volume_mute","expected_target":"system","expected_params":{},"dangerous":false}
+{"text":"Відкри, Ютуб!","expected_action":"open_app","expected_target":"youtube","expected_params":{},"dangerous":false}
+{"text":"відкрий ютуб","expected_action":"open_app","expected_target":"youtube","expected_params":{},"dangerous":false}
 {"text":"Видели файли і зробі тихіші","expected_action":null,"expected_target":null,"expected_params":{},"dangerous":true}

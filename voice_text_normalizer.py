@@ -35,6 +35,7 @@ def correct_voice_text(text: str) -> VoiceTextCorrection:
     corrected = _replace_phrase(corrected, r"\bповерне\s+звук\b", "поверни звук", "поверне звук -> поверни звук", applied)
     corrected = _replace_phrase(corrected, r"\bповерний\s+звук\b", "поверни звук", "поверний звук -> поверни звук", applied)
     corrected = _replace_phrase(corrected, r"\bвимкне\s+звук\b", "вимкни звук", "вимкне звук -> вимкни звук", applied)
+    corrected = _replace_phrase(corrected, r"\bвідкри\b", "відкрий", "відкри -> відкрий", applied)
 
     tokens = _tokens(corrected)
     has_command_context = any(token in COMMAND_VERBS for token in tokens)

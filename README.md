@@ -126,6 +126,37 @@ Empty `ARVIS_MIC_DEVICE` uses the default microphone. Device names that look lik
 
 Voice audio ducking is enabled by default for `/voice test` and `/voice once`. Arvis prepares the STT model first, then ducks audio only while the microphone is recording, restores volume, and only then transcribes. It does not pause media, mute audio, unmute previously muted audio, or capture desktop/system audio. If `wpctl` is missing or ducking fails, voice recording continues and Arvis prints a warning.
 
+Whitelist website launch uses the same safe text pipeline, so typed commands and `/voice once` work the same way. Arvis can open only configured website targets, not arbitrary URLs. If STT returns a slightly imperfect command like `Відкри, Ютуб!`, the voice pipeline may route it when the resolver normalizes it to a safe whitelist action.
+
+- `відкрий ютуб`, `открой ютуб`, `open youtube` -> `open_app`, target `youtube`
+- `відкрий google` -> `open_app`, target `google`
+- `відкрий github` -> `open_app`, target `github`
+- `відкрий chatgpt` -> `open_app`, target `chatgpt`
+
+Default Linux/Bazzite commands use `xdg-open` with fixed URLs. You can override them locally in `.env`:
+
+```bash
+YOUTUBE_COMMAND=xdg-open https://www.youtube.com/
+GOOGLE_COMMAND=xdg-open https://www.google.com/
+GITHUB_COMMAND=xdg-open https://github.com/
+CHATGPT_COMMAND=xdg-open https://chatgpt.com/
+```
+
+To force Brave instead of the system default browser:
+
+```bash
+YOUTUBE_COMMAND=brave-browser https://www.youtube.com/
+GOOGLE_COMMAND=brave-browser https://www.google.com/
+GITHUB_COMMAND=brave-browser https://github.com/
+CHATGPT_COMMAND=brave-browser https://chatgpt.com/
+```
+
+Flatpak Brave example:
+
+```bash
+YOUTUBE_COMMAND=flatpak run com.brave.Browser https://www.youtube.com/
+```
+
 Recommended first test:
 
 ```text
@@ -273,6 +304,8 @@ Resolver v0.3 спочатку блокує destructive phrases, потім пе
 - `Яка гучність?` -> `volume_status`
 - `Постав звук на 30` -> `volume_set`, params `level_percent=30`
 - `Вруби споті` -> `open_app`, target `spotify`
+- `відкрий ютуб`, `открой ютуб`, `open youtube` -> `open_app`, target `youtube`
+- `відкрий google`, `відкрий github`, `відкрий chatgpt` -> whitelist website targets
 - `Постав це на паузу` -> `music_pause`
 - `Що зараз грає?` -> `media_status`
 - `зупини сервер`, `вимкни сервер` -> `minecraft_server_stop`, target `default`
@@ -387,6 +420,8 @@ Apps:
 - `open_app`
 - `launch_app`
 
+Whitelist app/site targets include `spotify`, `steam`, `brave`, `discord`, `telegram`, `youtube`, `google`, `github`, `chatgpt`.
+
 Minecraft:
 
 - `minecraft_server_status`
@@ -476,7 +511,7 @@ Minecraft/server intent priority:
 
 Media target aliases:
 
-- `spotify`, `music`, `media`, `current_media`, `current_track`, `current_song`, `active_player`, `player`, `browser`, `brave`, `youtube`, `video`
+- `spotify`, `music`, `media`, `current_media`, `current_track`, `current_song`, `active_player`, `player`, `browser`, `brave`, `video`
 
 Media targets do not use app launch whitelist. For media actions, router normalizes the action and `actions/media.py` selects an available MPRIS player through `playerctl -l`.
 

@@ -323,6 +323,52 @@ class MainReloadCommandTests(unittest.TestCase):
         self.assertTrue(FakeVoiceDucking.instances[0].entered)
         self.assertTrue(FakeVoiceDucking.instances[0].exited)
 
+    def test_voice_once_routes_corrected_website_command(self) -> None:
+        router = Mock()
+        router.dry_run = True
+        process_text = Mock(return_value=("updated", 8))
+        FakeVoiceDucking.instances.clear()
+
+        with patch("main.load_voice_config", return_value=self._voice_config(enabled=True)), patch(
+            "main.preflight_voice_capture",
+            return_value=None,
+        ), patch("main.ensure_stt_model_loaded"), patch(
+            "main.record_microphone_to_temp_wav",
+            return_value=Path("voice.wav"),
+        ), patch(
+            "main.transcribe_recorded_audio",
+            return_value=VoiceTranscriptionResult(True, text="Відкри, Ютуб!"),
+        ), patch("main.VoiceDucking", FakeVoiceDucking):
+            result = main.handle_command("/voice once", [], "summary", False, router, [], 7, process_text)
+
+        self.assertTrue(result.handled)
+        self.assertEqual(result.session_summary, "updated")
+        self.assertEqual(result.command_counter, 8)
+        process_text.assert_called_once_with("Відкри, Ютуб!")
+
+    def test_voice_once_routes_dangerous_command_like_text_to_pipeline(self) -> None:
+        router = Mock()
+        router.dry_run = True
+        process_text = Mock(return_value=("blocked", 7))
+        FakeVoiceDucking.instances.clear()
+
+        with patch("main.load_voice_config", return_value=self._voice_config(enabled=True)), patch(
+            "main.preflight_voice_capture",
+            return_value=None,
+        ), patch("main.ensure_stt_model_loaded"), patch(
+            "main.record_microphone_to_temp_wav",
+            return_value=Path("voice.wav"),
+        ), patch(
+            "main.transcribe_recorded_audio",
+            return_value=VoiceTranscriptionResult(True, text="видали файли і відкрий ютуб"),
+        ), patch("main.VoiceDucking", FakeVoiceDucking):
+            result = main.handle_command("/voice once", [], "summary", False, router, [], 7, process_text)
+
+        self.assertTrue(result.handled)
+        self.assertEqual(result.session_summary, "blocked")
+        self.assertEqual(result.command_counter, 7)
+        process_text.assert_called_once_with("видали файли і відкрий ютуб")
+
     def test_voice_once_rejects_non_command_transcript(self) -> None:
         router = Mock()
         router.dry_run = True
@@ -338,6 +384,28 @@ class MainReloadCommandTests(unittest.TestCase):
         ), patch(
             "main.transcribe_recorded_audio",
             return_value=VoiceTranscriptionResult(True, text="Арвіс, ти мене чуєш?"),
+        ), patch("main.VoiceDucking", FakeVoiceDucking):
+            result = main.handle_command("/voice once", [], "summary", False, router, [], 7, process_text)
+
+        self.assertTrue(result.handled)
+        process_text.assert_not_called()
+        router.route.assert_not_called()
+
+    def test_voice_once_rejects_random_noise_without_command_intent(self) -> None:
+        router = Mock()
+        router.dry_run = True
+        process_text = Mock()
+        FakeVoiceDucking.instances.clear()
+
+        with patch("main.load_voice_config", return_value=self._voice_config(enabled=True)), patch(
+            "main.preflight_voice_capture",
+            return_value=None,
+        ), patch("main.ensure_stt_model_loaded"), patch(
+            "main.record_microphone_to_temp_wav",
+            return_value=Path("voice.wav"),
+        ), patch(
+            "main.transcribe_recorded_audio",
+            return_value=VoiceTranscriptionResult(True, text="синій камінь біля вікна"),
         ), patch("main.VoiceDucking", FakeVoiceDucking):
             result = main.handle_command("/voice once", [], "summary", False, router, [], 7, process_text)
 

@@ -607,7 +607,7 @@ def show_actions() -> None:
     table.add_column("Targets/examples")
     table.add_column("Status")
     rows = [
-        ("open_app", "spotify, steam, brave, discord, telegram", "ready"),
+        ("open_app", "spotify, steam, brave, discord, telegram, youtube, google, github, chatgpt", "ready"),
         ("music_pause", "media", "ready"),
         ("music_next", "media", "ready"),
         ("music_previous", "media", "ready"),
@@ -770,11 +770,17 @@ def handle_voice_capture_command(
 
 
 def _should_route_voice_transcript(text: str) -> bool:
-    normalized = " ".join(text.strip().lower().replace("?", " ").replace("!", " ").split())
+    normalized = " ".join(text.strip().lower().replace("?", " ").replace("!", " ").replace(",", " ").split())
     diagnostic_phrases = ("ти мене чуєш", "чуєш мене", "мене чуєш")
     if any(phrase in normalized for phrase in diagnostic_phrases):
         return False
-    return looks_like_command(text)
+
+    resolved = IntentResolver().resolve(text, use_llm=False)
+    if should_pass_to_router(resolved):
+        return True
+
+    correction = correct_voice_text(text)
+    return looks_like_command(correction.corrected_text)
 
 
 def show_voice_diagnose_result(recognized_text: str) -> None:

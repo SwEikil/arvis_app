@@ -64,6 +64,9 @@ ALLOWED_TARGETS = {
     "browser",
     "brave",
     "youtube",
+    "google",
+    "github",
+    "chatgpt",
     "video",
     "spotify",
     "steam",
@@ -426,6 +429,67 @@ APP_PHRASES: list[tuple[str, set[str]]] = [
     ("discord", {"відкрий discord", "запусти discord", "відкрий дискорд"}),
     ("telegram", {"відкрий telegram", "запусти telegram", "відкрий телеграм", "відкрий телегу"}),
     ("brave", {"відкрий браузер", "відкрий brave", "запусти браузер"}),
+    (
+        "youtube",
+        {
+            "відкрий ютуб",
+            "відкрий ютюб",
+            "відкрий ютьюб",
+            "запусти ютуб",
+            "запусти ютюб",
+            "открой ютуб",
+            "открой ютюб",
+            "open youtube",
+            "start youtube",
+            "open yt",
+        },
+    ),
+    (
+        "google",
+        {
+            "відкрий google",
+            "відкрий гугл",
+            "відкрий ґугл",
+            "запусти google",
+            "запусти гугл",
+            "открой google",
+            "открой гугл",
+            "open google",
+            "start google",
+        },
+    ),
+    (
+        "github",
+        {
+            "відкрий github",
+            "відкрий git hub",
+            "відкрий гітхаб",
+            "відкрий гитхаб",
+            "запусти github",
+            "открой github",
+            "открой гитхаб",
+            "open github",
+            "open git hub",
+            "start github",
+        },
+    ),
+    (
+        "chatgpt",
+        {
+            "відкрий chatgpt",
+            "відкрий chat gpt",
+            "відкрий чатгпт",
+            "відкрий чат гпт",
+            "відкрий чатджпт",
+            "запусти chatgpt",
+            "запусти чатгпт",
+            "открой chatgpt",
+            "открой чатгпт",
+            "open chatgpt",
+            "open chat gpt",
+            "start chatgpt",
+        },
+    ),
 ]
 
 MINECRAFT_PHRASES: list[tuple[str, set[str]]] = [
@@ -1172,6 +1236,7 @@ def _build_llm_prompt(user_text: str, command_history: list[dict[str, object]]) 
     return (
         "You are an intent resolver for a local assistant. Return ONLY JSON.\n"
         "Never return raw shell commands. Only use allowed actions.\n"
+        "Use open_app only for whitelist apps/sites, never for arbitrary URLs.\n"
         "For Minecraft server phrases, use the local Minecraft Server Manager actions and do not ask for IP/domain.\n"
         f"Allowed actions: {sorted(ALLOWED_ACTIONS)}\n"
         "Optional params: step_percent for volume_up/volume_down, level_percent for volume_set, seconds for media_seek_forward/media_seek_backward.\n"

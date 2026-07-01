@@ -235,6 +235,10 @@ def _display_target(target: str) -> str:
         "brave": "Brave",
         "discord": "Discord",
         "telegram": "Telegram",
+        "youtube": "YouTube",
+        "google": "Google",
+        "github": "GitHub",
+        "chatgpt": "ChatGPT",
     }
     return names.get(target, target)
 

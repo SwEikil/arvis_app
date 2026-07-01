@@ -149,6 +149,13 @@ class ResponseRendererTests(unittest.TestCase):
             ),
             "Запустив Spotify, сер.",
         )
+        self.assertEqual(
+            render_final_response(
+                "",
+                self._result("open_app", "executed", None, "done", executed=True, normalized_target="youtube"),
+            ),
+            "Запустив YouTube, сер.",
+        )
 
     def test_status_and_set_responses(self) -> None:
         self.assertEqual(
