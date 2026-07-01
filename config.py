@@ -109,4 +109,8 @@ APP_COMMANDS = {
         "TELEGRAM_COMMAND",
         [["flatpak", "run", "org.telegram.desktop"], ["telegram-desktop"]],
     ),
+    "youtube": command_options_from_env("YOUTUBE_COMMAND", [["xdg-open", "https://www.youtube.com/"]]),
+    "google": command_options_from_env("GOOGLE_COMMAND", [["xdg-open", "https://www.google.com/"]]),
+    "github": command_options_from_env("GITHUB_COMMAND", [["xdg-open", "https://github.com/"]]),
+    "chatgpt": command_options_from_env("CHATGPT_COMMAND", [["xdg-open", "https://chatgpt.com/"]]),
 }
