@@ -178,23 +178,7 @@ def _render_generic_executed(action: str, result: CommandResult) -> str | None:
         target = result.normalized_target or result.original_target or "app"
         return f"Запустив {_display_target(target)}, сер."
     if action == "browser_task_run":
-        details = _parse_details(result.details)
-        max_targets = details.get("max_targets") or "30"
-        attempted_clicks = details.get("attempted_clicks") or "0"
-        confirmed_hits = details.get("confirmed_hits") or "0"
-        elapsed_seconds = details.get("elapsed_seconds") or "0.00"
-        final_site_result = (details.get("final_site_result_ms") or "").strip()
-        if final_site_result:
-            return (
-                f"Готово, сер. Підтверджено {confirmed_hits}/{max_targets} цілей за {elapsed_seconds} секунд. "
-                f"Результат сайту: {final_site_result}."
-            )
-        if confirmed_hits == max_targets:
-            return f"Готово, сер. Підтверджено {confirmed_hits}/{max_targets} цілей за {elapsed_seconds} секунд."
-        return (
-            "Завершив, сер, але не можу підтвердити "
-            f"{max_targets} попадань. Спроб: {attempted_clicks}, підтверджено: {confirmed_hits}, час: {elapsed_seconds} секунд."
-        )
+        return _render_browser_task_executed(result)
     return None
 
 
@@ -259,6 +243,80 @@ def _render_volume_status(result: CommandResult) -> str:
     return f"Гучність зараз {volume}%, сер."
 
 
+def _render_browser_task_executed(result: CommandResult) -> str:
+    details = _parse_details(result.details)
+    max_targets = _details_int(details, "max_targets", 30)
+    attempted_clicks = _details_int(details, "attempted_clicks", 0)
+    confirmed_hits = _details_int(details, "confirmed_hits", 0)
+    elapsed_seconds = _details_float(details, "elapsed_seconds", 0.0)
+    elapsed_text = details.get("elapsed_seconds") or f"{elapsed_seconds:.2f}"
+    average_cycle = _average_cycle_ms(elapsed_seconds, confirmed_hits)
+    final_site_result = _clean_browser_site_result(details.get("final_site_result_ms"))
+
+    if final_site_result or confirmed_hits >= max_targets:
+        response = f"Готово, сер. Підтверджено {confirmed_hits}/{max_targets} цілей за {elapsed_text} секунд."
+        if average_cycle is not None:
+            response = f"{response} Середній цикл: {average_cycle} ms."
+        if final_site_result:
+            response = f"{response} Результат сайту: {final_site_result}."
+        return response
+
+    return (
+        "Завершив, сер, але не можу підтвердити "
+        f"{max_targets} попадань. Спроб: {attempted_clicks}, підтверджено: {confirmed_hits}, час: {elapsed_text} секунд."
+        f"{_browser_stop_reason_suffix(details)}"
+    )
+
+
+def _clean_browser_site_result(value: str | None) -> str:
+    cleaned = (value or "").strip()
+    if not cleaned:
+        return ""
+    if cleaned.startswith(";"):
+        return ""
+    cleaned = cleaned.split(";", 1)[0].strip()
+    if not cleaned or "user_text=" in cleaned:
+        return ""
+    return cleaned
+
+
+def _browser_stop_reason_suffix(details: dict[str, str]) -> str:
+    reason = _clean_browser_detail(details.get("stop_reason"))
+    if not reason:
+        return ""
+    return f" Зупинився, сер: {reason}."
+
+
+def _clean_browser_detail(value: str | None) -> str:
+    cleaned = (value or "").strip()
+    if not cleaned or cleaned.startswith(";"):
+        return ""
+    cleaned = cleaned.split(";", 1)[0].strip()
+    if "user_text=" in cleaned:
+        return ""
+    return cleaned
+
+
+def _average_cycle_ms(elapsed_seconds: float, confirmed_hits: int) -> int | None:
+    if confirmed_hits <= 0 or elapsed_seconds <= 0:
+        return None
+    return round(elapsed_seconds * 1000 / confirmed_hits)
+
+
+def _details_int(details: dict[str, str], key: str, default: int) -> int:
+    try:
+        return int(float((details.get(key) or "").strip()))
+    except ValueError:
+        return default
+
+
+def _details_float(details: dict[str, str], key: str, default: float) -> float:
+    try:
+        return float((details.get(key) or "").strip())
+    except ValueError:
+        return default
+
+
 def _display_target(target: str) -> str:
     names = {
         "spotify": "Spotify",
@@ -284,8 +342,11 @@ def _display_browser_task(target: str) -> str:
 def _parse_details(details: str | None) -> dict[str, str]:
     parsed: dict[str, str] = {}
     for line in (details or "").splitlines():
-        if ":" not in line:
+        if ":" in line:
+            key, value = line.split(":", 1)
+        elif "=" in line:
+            key, value = line.split("=", 1)
+        else:
             continue
-        key, value = line.split(":", 1)
         parsed[key.strip()] = value.strip()
     return parsed

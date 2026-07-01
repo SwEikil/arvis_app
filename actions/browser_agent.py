@@ -14,6 +14,9 @@ from typing import Any
 VIEWPORT_WIDTH = 1280
 VIEWPORT_HEIGHT = 800
 MIN_TARGET_CONFIDENCE = 0.72
+MAX_AIM_ATTEMPTS = 60
+MAX_CONSECUTIVE_UNCONFIRMED = 5
+MAX_AIM_RUNTIME_SECONDS = 45.0
 AD_TRACKER_PATTERNS = (
     "googleads",
     "doubleclick",
@@ -63,9 +66,30 @@ class AimTaskStats:
     confirmed_hits: int = 0
     detected_targets: int = 0
     missed_or_unconfirmed: int = 0
+    consecutive_unconfirmed: int = 0
+    max_attempts: int = MAX_AIM_ATTEMPTS
     elapsed_seconds: float = 0.0
     final_site_result_ms: str = ""
     last_error: str = ""
+    stop_reason: str = ""
+    browser_state_errors: int = 0
+    unexpected_pages: int = 0
+
+
+@dataclass
+class BrowserState:
+    main_page: Any
+    unexpected_page_count: int = 0
+    scroll_restore_attempted: bool = False
+    bring_to_front_attempted: bool = False
+
+
+@dataclass(frozen=True)
+class BrowserBaseline:
+    viewport_width: int
+    viewport_height: int
+    scroll_x: int
+    scroll_y: int
 
 
 BROWSER_TASKS = {
@@ -77,12 +101,33 @@ BROWSER_TASKS = {
     ),
 }
 
+BROWSER_TASK_TARGET_ALIASES = {
+    "humanbenchmark_aim": "humanbenchmark_aim",
+    "humanbenchmark aim": "humanbenchmark_aim",
+    "humanbenchmark": "humanbenchmark_aim",
+    "human benchmark aim": "humanbenchmark_aim",
+    "aim_trainer": "humanbenchmark_aim",
+    "aim trainer": "humanbenchmark_aim",
+    "aim_training": "humanbenchmark_aim",
+    "aim training": "humanbenchmark_aim",
+    "aim_test": "humanbenchmark_aim",
+    "aim test": "humanbenchmark_aim",
+    "aim": "humanbenchmark_aim",
+    "аім": "humanbenchmark_aim",
+    "аіма": "humanbenchmark_aim",
+    "аіму": "humanbenchmark_aim",
+    "аима": "humanbenchmark_aim",
+    "аиму": "humanbenchmark_aim",
+    "эйм": "humanbenchmark_aim",
+}
+
 DEFAULT_AIM_CLICK_REGION = AimClickRegion(left=260, top=120, right=1020, bottom=720)
 
 
 def normalize_browser_task_target(target: str | None) -> str:
     normalized = (target or "").strip().lower().replace("-", " ").replace("_", " ")
-    return "_".join(normalized.split())
+    normalized = " ".join(normalized.split())
+    return BROWSER_TASK_TARGET_ALIASES.get(normalized, normalized.replace(" ", "_"))
 
 
 def preview_browser_task(target: str | None) -> tuple[bool, str, str | None]:
@@ -207,11 +252,19 @@ def _run_humanbenchmark_aim(task: BrowserTask, sync_playwright: Any, playwright_
 
     try:
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=False)
+            browser = playwright.chromium.launch(
+                headless=False,
+                args=[
+                    "--disable-popup-blocking=false",
+                    "--disable-extensions",
+                    "--no-first-run",
+                ],
+            )
             context = browser.new_context(viewport={"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT})
             _install_ad_blocking(context, debug)
             page = context.new_page()
-            _attach_popup_guard(context, page, debug)
+            browser_state = BrowserState(main_page=page)
+            _attach_popup_guard(context, page, debug, browser_state)
             blocked_state: dict[str, str] = {}
             _attach_download_guard(page, blocked_state, debug)
 
@@ -220,6 +273,7 @@ def _run_humanbenchmark_aim(task: BrowserTask, sync_playwright: Any, playwright_
             blocked_reason = _blocked_page_reason(page, task, blocked_state)
             if blocked_reason:
                 stats.last_error = blocked_reason
+                stats.stop_reason = "browser_task_blocked"
                 stats.elapsed_seconds = time.monotonic() - started
                 return False, "Browser task blocked.", _task_details(task, stats)
 
@@ -227,13 +281,31 @@ def _run_humanbenchmark_aim(task: BrowserTask, sync_playwright: Any, playwright_
             if not _click_start(page, playwright_timeout_error, debug):
                 debug.log({"event": "start_not_found"})
 
-            deadline = time.monotonic() + 45.0
+            baseline = _capture_browser_baseline(page)
+            deadline = started + MAX_AIM_RUNTIME_SECONDS
             iteration = 0
             while stats.confirmed_hits < task.max_targets and time.monotonic() < deadline:
                 iteration += 1
+                limit_reason = _limit_stop_reason(stats, started)
+                if limit_reason:
+                    stats.stop_reason = limit_reason
+                    stats.last_error = limit_reason
+                    debug.log(_debug_state_event("stop_limit", page, stats, {"reason": limit_reason}))
+                    break
+
+                state_reason = _check_browser_state(context, page, task, blocked_state, baseline, browser_state, debug)
+                if state_reason:
+                    stats.browser_state_errors += 1
+                    stats.stop_reason = state_reason
+                    stats.last_error = state_reason
+                    stats.unexpected_pages = browser_state.unexpected_page_count
+                    debug.log(_debug_state_event("stop_browser_state", page, stats, {"reason": state_reason}))
+                    break
+
                 blocked_reason = _blocked_page_reason(page, task, blocked_state)
                 if blocked_reason:
                     stats.last_error = blocked_reason
+                    stats.stop_reason = "browser_task_blocked"
                     stats.elapsed_seconds = time.monotonic() - started
                     return False, "Browser task blocked.", _task_details(task, stats)
 
@@ -255,6 +327,7 @@ def _run_humanbenchmark_aim(task: BrowserTask, sync_playwright: Any, playwright_
                     stats.detected_targets += 1
                 if not clicked:
                     stats.last_error = reason
+                    debug.log(_debug_state_event("no_click_wait", page, stats, {"reason": reason}))
                     page.wait_for_timeout(150)
                     continue
 
@@ -268,22 +341,31 @@ def _run_humanbenchmark_aim(task: BrowserTask, sync_playwright: Any, playwright_
                 if final_result:
                     stats.final_site_result_ms = final_result
                     stats.confirmed_hits += 1
+                    stats.consecutive_unconfirmed = 0
                     break
                 if _target_changed_or_disappeared(target, after_target):
                     stats.confirmed_hits += 1
+                    stats.consecutive_unconfirmed = 0
                     stats.last_error = ""
                     debug.log({"event": "confirmed_hit", "iteration": iteration})
                 else:
                     stats.missed_or_unconfirmed += 1
+                    stats.consecutive_unconfirmed += 1
                     stats.last_error = "target_not_confirmed_after_click"
                     debug.log({"event": "unconfirmed_click", "iteration": iteration})
 
             stats.elapsed_seconds = time.monotonic() - started
+            if not stats.stop_reason and time.monotonic() >= deadline and stats.confirmed_hits < task.max_targets:
+                stats.stop_reason = "max_runtime_seconds"
+                stats.last_error = stats.stop_reason
             stats.missed_or_unconfirmed = max(stats.missed_or_unconfirmed, stats.attempted_clicks - stats.confirmed_hits)
+            stats.unexpected_pages = browser_state.unexpected_page_count
+            debug.log(_debug_state_event("task_finished", page, stats, {"stop_reason": stats.stop_reason}))
             return True, "Browser task completed.", _task_details(task, stats)
     except Exception as exc:
         stats.elapsed_seconds = time.monotonic() - started
         stats.last_error = f"{type(exc).__name__}: {exc}"
+        stats.stop_reason = stats.stop_reason or "exception"
         return (
             stats.attempted_clicks > 0,
             "Browser task failed." if stats.attempted_clicks == 0 else "Browser task partially completed.",
@@ -394,15 +476,22 @@ def _is_blocked_request_url(url: str) -> bool:
     return any(pattern in lowered for pattern in AD_TRACKER_PATTERNS)
 
 
-def _attach_popup_guard(context: Any, main_page: Any, debug: "BrowserDebug") -> None:
+def _attach_popup_guard(context: Any, main_page: Any, debug: "BrowserDebug", browser_state: BrowserState | None = None) -> None:
     def on_page(page: Any) -> None:
         if page is main_page:
             return
+        if browser_state is not None:
+            browser_state.unexpected_page_count += 1
         _close_unexpected_page(page, debug, reason="unexpected_page")
 
     context.on("page", on_page)
     try:
-        main_page.on("popup", lambda page: _close_unexpected_page(page, debug, reason="popup"))
+        def on_popup(page: Any) -> None:
+            if browser_state is not None:
+                browser_state.unexpected_page_count += 1
+            _close_unexpected_page(page, debug, reason="popup")
+
+        main_page.on("popup", on_popup)
     except Exception:
         pass
 
@@ -455,6 +544,196 @@ def _blocked_page_reason(page: Any, task: BrowserTask, blocked_state: dict[str, 
     return ""
 
 
+def _capture_browser_baseline(page: Any) -> BrowserBaseline:
+    viewport = _viewport_size(page)
+    scroll_x, scroll_y = _scroll_position(page)
+    return BrowserBaseline(
+        viewport_width=viewport[0],
+        viewport_height=viewport[1],
+        scroll_x=scroll_x,
+        scroll_y=scroll_y,
+    )
+
+
+def _check_browser_state(
+    context: Any,
+    page: Any,
+    task: BrowserTask,
+    blocked_state: dict[str, str],
+    baseline: BrowserBaseline,
+    browser_state: BrowserState,
+    debug: "BrowserDebug",
+) -> str:
+    if _page_is_closed(page):
+        return "browser_state_unstable:page_closed"
+
+    if browser_state.unexpected_page_count > 1:
+        return "browser_state_unstable:repeated_unexpected_page"
+
+    pages = [candidate for candidate in _context_pages(context) if not _page_is_closed(candidate)]
+    devtools_pages = [candidate for candidate in pages if candidate is not page and _is_devtools_page(candidate)]
+    if devtools_pages:
+        for devtools_page in devtools_pages:
+            browser_state.unexpected_page_count += 1
+            _close_unexpected_page(devtools_page, debug, reason="devtools_page_state_check")
+        return "browser_state_unstable:devtools_page"
+
+    extra_pages = [candidate for candidate in pages if candidate is not page]
+    if extra_pages:
+        for extra_page in extra_pages:
+            browser_state.unexpected_page_count += 1
+            _close_unexpected_page(extra_page, debug, reason="extra_page_state_check")
+        return "browser_state_unstable:extra_page"
+
+    blocked_reason = _blocked_page_reason(page, task, blocked_state)
+    if blocked_reason:
+        return blocked_reason
+
+    visibility = _document_visibility(page)
+    if visibility != "visible":
+        if not browser_state.bring_to_front_attempted:
+            browser_state.bring_to_front_attempted = True
+            _bring_to_front(page)
+            visibility = _document_visibility(page)
+            debug.log(_debug_state_event("bring_to_front", page, None, {"visibility": visibility}))
+        if visibility != "visible":
+            return "browser_state_unstable:page_not_visible"
+
+    viewport = _viewport_size(page)
+    if viewport != (baseline.viewport_width, baseline.viewport_height):
+        return "browser_state_unstable:viewport_changed"
+
+    scroll_x, scroll_y = _scroll_position(page)
+    if abs(scroll_x - baseline.scroll_x) > 2 or abs(scroll_y - baseline.scroll_y) > 2:
+        if not browser_state.scroll_restore_attempted:
+            browser_state.scroll_restore_attempted = True
+            _restore_scroll(page, baseline.scroll_x, baseline.scroll_y)
+            restored_x, restored_y = _scroll_position(page)
+            debug.log(
+                _debug_state_event(
+                    "scroll_restore",
+                    page,
+                    None,
+                    {"before": [scroll_x, scroll_y], "after": [restored_x, restored_y]},
+                )
+            )
+            if abs(restored_x - baseline.scroll_x) <= 2 and abs(restored_y - baseline.scroll_y) <= 2:
+                return ""
+        return "user_interference_or_layout_changed"
+
+    return ""
+
+
+def _context_pages(context: Any) -> list[Any]:
+    pages = getattr(context, "pages", [])
+    if callable(pages):
+        try:
+            pages = pages()
+        except Exception:
+            return []
+    return list(pages or [])
+
+
+def _page_is_closed(page: Any) -> bool:
+    is_closed = getattr(page, "is_closed", None)
+    if callable(is_closed):
+        try:
+            return bool(is_closed())
+        except Exception:
+            return False
+    return bool(getattr(page, "closed", False))
+
+
+def _is_devtools_page(page: Any) -> bool:
+    url = str(getattr(page, "url", "") or "").lower()
+    return url.startswith("devtools://") or "devtools" in url
+
+
+def _document_visibility(page: Any) -> str:
+    try:
+        value = page.evaluate("document.visibilityState")
+    except Exception:
+        return "visible"
+    return str(value or "")
+
+
+def _bring_to_front(page: Any) -> None:
+    bring_to_front = getattr(page, "bring_to_front", None)
+    if callable(bring_to_front):
+        try:
+            bring_to_front()
+        except Exception:
+            pass
+
+
+def _viewport_size(page: Any) -> tuple[int, int]:
+    try:
+        value = page.evaluate("[window.innerWidth, window.innerHeight]")
+        if isinstance(value, (list, tuple)) and len(value) == 2:
+            return int(value[0]), int(value[1])
+    except Exception:
+        pass
+    viewport_size = getattr(page, "viewport_size", None)
+    if isinstance(viewport_size, dict):
+        return int(viewport_size.get("width", VIEWPORT_WIDTH)), int(viewport_size.get("height", VIEWPORT_HEIGHT))
+    return VIEWPORT_WIDTH, VIEWPORT_HEIGHT
+
+
+def _scroll_position(page: Any) -> tuple[int, int]:
+    try:
+        value = page.evaluate("[window.scrollX || 0, window.scrollY || 0]")
+        if isinstance(value, (list, tuple)) and len(value) == 2:
+            return int(value[0]), int(value[1])
+    except Exception:
+        pass
+    return 0, 0
+
+
+def _restore_scroll(page: Any, x: int, y: int) -> None:
+    try:
+        page.evaluate(f"window.scrollTo({int(x)}, {int(y)})")
+    except Exception:
+        pass
+
+
+def _limit_stop_reason(stats: AimTaskStats, started: float) -> str:
+    if stats.attempted_clicks >= stats.max_attempts:
+        return "max_attempts"
+    if stats.consecutive_unconfirmed >= MAX_CONSECUTIVE_UNCONFIRMED:
+        return "max_consecutive_unconfirmed"
+    if time.monotonic() - started > MAX_AIM_RUNTIME_SECONDS:
+        return "max_runtime_seconds"
+    return ""
+
+
+def _debug_state_event(
+    event: str,
+    page: Any,
+    stats: AimTaskStats | None,
+    extra: dict[str, object] | None = None,
+) -> dict[str, object]:
+    scroll_x, scroll_y = _scroll_position(page)
+    viewport_width, viewport_height = _viewport_size(page)
+    payload: dict[str, object] = {
+        "event": event,
+        "url": str(getattr(page, "url", "") or ""),
+        "scroll": [scroll_x, scroll_y],
+        "viewport": [viewport_width, viewport_height],
+    }
+    if stats is not None:
+        payload.update(
+            {
+                "attempted_clicks": stats.attempted_clicks,
+                "confirmed_hits": stats.confirmed_hits,
+                "consecutive_unconfirmed": stats.consecutive_unconfirmed,
+                "stop_reason": stats.stop_reason,
+            }
+        )
+    if extra:
+        payload.update(extra)
+    return payload
+
+
 def _read_final_result_ms(page: Any) -> str:
     try:
         body = page.locator("body").inner_text(timeout=500)
@@ -483,8 +762,13 @@ def _task_details(task: BrowserTask, stats: AimTaskStats) -> str:
         f"max_targets: {task.max_targets}",
         f"attempted_clicks: {stats.attempted_clicks}",
         f"confirmed_hits: {stats.confirmed_hits}",
+        f"max_attempts: {stats.max_attempts}",
         f"detected_targets: {stats.detected_targets}",
         f"missed_or_unconfirmed: {stats.missed_or_unconfirmed}",
+        f"consecutive_unconfirmed: {stats.consecutive_unconfirmed}",
+        f"stop_reason: {stats.stop_reason}",
+        f"browser_state_errors: {stats.browser_state_errors}",
+        f"unexpected_pages: {stats.unexpected_pages}",
         f"elapsed_seconds: {stats.elapsed_seconds:.2f}",
         f"final_site_result_ms: {stats.final_site_result_ms}",
     ]

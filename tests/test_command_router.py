@@ -102,6 +102,25 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
         self.assertEqual(result.normalized_action, "browser_task_run")
         self.assertEqual(result.normalized_target, "humanbenchmark_aim")
         self.assertIn("https://humanbenchmark.com/tests/aim", result.details or "")
+        self.assertNotIn("user_text=", result.details or "")
+
+    def test_browser_task_result_details_do_not_include_user_text(self) -> None:
+        with patch(
+            "command_router.execute_browser_task",
+            return_value=(
+                True,
+                "Browser task completed.",
+                "attempted_clicks: 30\nconfirmed_hits: 30\nmax_targets: 30\nelapsed_seconds: 16.72",
+            ),
+        ):
+            result = CommandRouter(dry_run=False).route(
+                ActionIntent(action="browser_task_run", target="humanbenchmark_aim", risk="safe", need_confirmation=False),
+                user_text="відкрий тренування аіму і порази 30 цілей",
+            )
+
+        self.assertEqual(result.status, "executed")
+        self.assertNotIn("user_text=", result.details or "")
+        self.assertEqual(result.original_user_text, "відкрий тренування аіму і порази 30 цілей")
 
     def test_unknown_browser_task_target_is_blocked(self) -> None:
         result = CommandRouter(dry_run=False).route(
@@ -139,7 +158,44 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
         self.assertFalse(result.executed)
         self.assertEqual(result.status, "blocked")
         self.assertEqual(result.reason_code, "browser_task_blocked")
+
+    def test_legacy_aim_game_module_normalizes_to_browser_task(self) -> None:
+        with patch(
+            "command_router.execute_browser_task",
+            return_value=(
+                True,
+                "Browser task completed.",
+                "attempted_clicks: 0\nconfirmed_hits: 0\nmax_targets: 30\nelapsed_seconds: 0.00",
+            ),
+        ) as execute:
+            result = CommandRouter(dry_run=False).route(
+                ActionIntent(action="launch_game_module", target="aim_trainer", risk="safe", need_confirmation=False),
+                user_text="відкрий тренування aimу і порази 30 цілей",
+            )
+
+        self.assertEqual(result.normalized_action, "browser_task_run")
+        self.assertEqual(result.normalized_target, "humanbenchmark_aim")
+        self.assertNotEqual(result.normalized_action, "launch_game_module")
+        execute.assert_called_once_with("humanbenchmark_aim")
         self.assertFalse(result.is_safety_block)
+
+    def test_legacy_aim_training_target_normalizes_to_browser_task(self) -> None:
+        with patch(
+            "command_router.execute_browser_task",
+            return_value=(
+                True,
+                "Browser task completed.",
+                "attempted_clicks: 0\nconfirmed_hits: 0\nmax_targets: 30\nelapsed_seconds: 0.00",
+            ),
+        ) as execute:
+            result = CommandRouter(dry_run=False).route(
+                ActionIntent(action="launch_game_module", target="aim_training", risk="safe", need_confirmation=False),
+                user_text="відкрий тренування аіму і порази 30 цілей",
+            )
+
+        self.assertEqual(result.normalized_action, "browser_task_run")
+        self.assertEqual(result.normalized_target, "humanbenchmark_aim")
+        execute.assert_called_once_with("humanbenchmark_aim")
 
     def test_volume_up_dry_run_uses_step_percent(self) -> None:
         result = CommandRouter(dry_run=True).route(

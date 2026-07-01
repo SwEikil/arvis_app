@@ -141,6 +141,28 @@ class ResponseRendererTests(unittest.TestCase):
         self.assertIn("підтверджено: 0", rendered)
         self.assertNotIn("Поцілив 30", rendered)
 
+    def test_browser_task_partial_response_includes_stop_reason(self) -> None:
+        result = self._result(
+            action="browser_task_run",
+            status="executed",
+            reason_code=None,
+            message="done",
+            executed=True,
+            normalized_target="humanbenchmark_aim",
+            details=(
+                "attempted_clicks: 60\n"
+                "confirmed_hits: 21\n"
+                "max_targets: 30\n"
+                "elapsed_seconds: 39.87\n"
+                "stop_reason: max_attempts; user_text=відкрий тренування аіма"
+            ),
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("Зупинився, сер: max_attempts", rendered)
+        self.assertNotIn("user_text=", rendered)
+
     def test_browser_task_confirmed_response(self) -> None:
         result = self._result(
             action="browser_task_run",
@@ -162,6 +184,57 @@ class ResponseRendererTests(unittest.TestCase):
 
         self.assertIn("Підтверджено 30/30", rendered)
         self.assertIn("Результат сайту: 422 ms", rendered)
+        self.assertIn("Середній цикл: 413 ms", rendered)
+
+    def test_browser_task_confirmed_without_site_result_hides_user_text(self) -> None:
+        result = self._result(
+            action="browser_task_run",
+            status="executed",
+            reason_code=None,
+            message="done",
+            executed=True,
+            normalized_target="humanbenchmark_aim",
+            details=(
+                "attempted_clicks: 30\n"
+                "confirmed_hits: 30\n"
+                "max_targets: 30\n"
+                "elapsed_seconds: 16.72\n"
+                "final_site_result_ms=; user_text=відкрий тренування аіма і порази 30 цілей"
+            ),
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertEqual(
+            rendered,
+            "Готово, сер. Підтверджено 30/30 цілей за 16.72 секунд. Середній цикл: 557 ms.",
+        )
+        self.assertNotIn("Результат сайту:", rendered)
+        self.assertNotIn("user_text=", rendered)
+
+    def test_browser_task_confirmed_average_cycle_uses_confirmed_hits(self) -> None:
+        result = self._result(
+            action="browser_task_run",
+            status="executed",
+            reason_code=None,
+            message="done",
+            executed=True,
+            normalized_target="humanbenchmark_aim",
+            details=(
+                "attempted_clicks: 30\n"
+                "confirmed_hits: 30\n"
+                "max_targets: 30\n"
+                "elapsed_seconds: 22.27\n"
+                "final_site_result_ms: "
+            ),
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertEqual(
+            rendered,
+            "Готово, сер. Підтверджено 30/30 цілей за 22.27 секунд. Середній цикл: 742 ms.",
+        )
 
     def test_browser_task_blocked_response(self) -> None:
         result = self._result(

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import unittest
+from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock
 from unittest.mock import patch
 
 import doctor
 import main
+from command_router import CommandResult
+from intent_resolver import IntentResolver
+from rich.console import Console
 from voice_config import VoiceConfig
 from voice_input import VoiceDependencyStatus
 from voice_input import VoiceTranscriptionResult
@@ -32,6 +36,38 @@ class FakeVoiceDucking:
         self.exited = True
         self.restored = True
         return False
+
+
+class FakeChatClient:
+    def __init__(self, response: str) -> None:
+        self.response = response
+
+    def chat(self, messages: list[dict[str, str]]) -> tuple[str, None]:
+        return self.response, None
+
+
+class RecordingRouter:
+    def __init__(self) -> None:
+        self.dry_run = False
+        self.calls: list[tuple[object, str | None]] = []
+
+    def route(self, intent: object, user_text: str | None = None) -> CommandResult:
+        self.calls.append((intent, user_text))
+        action = getattr(intent, "action")
+        target = getattr(intent, "target")
+        return CommandResult(
+            executed=True,
+            action=action,
+            status="executed",
+            message="Browser task completed.",
+            details="attempted_clicks: 30\nconfirmed_hits: 30\nmax_targets: 30\nelapsed_seconds: 16.63",
+            original_action=action,
+            normalized_action=action,
+            original_target=target,
+            normalized_target=target,
+            original_user_text=user_text,
+            params=getattr(intent, "params", {}),
+        )
 
 
 class MainReloadCommandTests(unittest.TestCase):
@@ -201,6 +237,45 @@ class MainReloadCommandTests(unittest.TestCase):
 
         self.assertTrue(result.handled)
         router.route.assert_not_called()
+
+    def test_aim_trainer_pipeline_routes_only_final_resolved_intent(self) -> None:
+        raw_response = (
+            "Пробую, сер.\n"
+            'ACTION_INTENT: {"action":"launch_game_module","target":"aim_training","risk":"safe","need_confirmation":false}'
+        )
+        router = RecordingRouter()
+        resolver = IntentResolver(Mock())
+        active_history: list[dict[str, str]] = []
+        command_history: list[dict[str, object]] = []
+        captured_console = Console(file=StringIO(), record=True, width=160)
+
+        with patch("main.console", captured_console):
+            main.process_user_text(
+                "відкрий тренування аіму і порази 30 цілей",
+                active_history,
+                "",
+                True,
+                router,  # type: ignore[arg-type]
+                resolver,
+                FakeChatClient(raw_response),  # type: ignore[arg-type]
+                command_history,
+                0,
+            )
+
+        self.assertEqual(len(router.calls), 1)
+        routed_intent = router.calls[0][0]
+        self.assertEqual(getattr(routed_intent, "action"), "browser_task_run")
+        self.assertEqual(getattr(routed_intent, "target"), "humanbenchmark_aim")
+        self.assertNotEqual(getattr(routed_intent, "action"), "launch_game_module")
+
+        debug_output = captured_console.export_text()
+        self.assertIn("ACTION INTENT", debug_output)
+        self.assertIn("browser_task_run", debug_output)
+        self.assertIn("humanbenchmark_aim", debug_output)
+        self.assertEqual(debug_output.count("COMMAND ROUTER"), 1)
+        self.assertNotIn("launch_game_module", debug_output)
+        self.assertNotIn("aim_training", debug_output)
+        self.assertNotIn("browser_task_target_not_whitelisted", debug_output)
 
     def test_voice_test_disabled_does_not_route(self) -> None:
         router = Mock()

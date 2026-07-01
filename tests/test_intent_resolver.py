@@ -133,7 +133,15 @@ class IntentResolverTests(unittest.TestCase):
                 self.assertTrue(should_pass_to_router(resolved))
 
     def test_browser_task_humanbenchmark_aim_phrases(self) -> None:
-        for phrase in ["відкрий тренування аіма", "open aim trainer"]:
+        for phrase in [
+            "відкрий тренування аіма",
+            "open aim trainer",
+            "відкрий тренування аіму і порази 30 цілей",
+            "відкрий тренування aimу і порази 30 цілей",
+            "відкрий тренеровку аима",
+            "запусти aim trainer",
+            "пройди aim test",
+        ]:
             with self.subTest(phrase=phrase):
                 resolved = self.resolver.resolve(phrase, use_llm=False)
 

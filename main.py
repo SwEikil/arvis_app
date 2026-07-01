@@ -294,8 +294,20 @@ def process_user_text(
     resolver_clarification: ResolvedIntent | None = None
     final_router_result: RouterCommandResult | None = None
     final_resolver_result: ResolvedIntent | None = None
+    final_action_intent = parsed.action_intent
 
-    if parsed.action_intent is not None:
+    preferred_resolved = resolver.resolve(user_text, command_history)
+    if should_pass_to_router(preferred_resolved):
+        resolver_results.append(preferred_resolved)
+        final_resolver_result = preferred_resolved
+        resolved_intent = preferred_resolved.to_action_intent()
+        final_action_intent = resolved_intent
+        if resolved_intent is not None:
+            router_result = router.route(resolved_intent, user_text=user_text)
+            router_results.append(router_result)
+            final_router_result = router_result
+            command_counter = record_command_history(command_history, command_counter, user_text, router_result)
+    elif parsed.action_intent is not None:
         router_result = router.route(parsed.action_intent, user_text=user_text)
         router_results.append(router_result)
         final_router_result = router_result
@@ -322,7 +334,7 @@ def process_user_text(
             else:
                 resolver_clarification = resolved
     else:
-        resolved = resolver.resolve(user_text, command_history)
+        resolved = preferred_resolved
         if (
             resolved.action is not None
             or resolved.confidence >= 0.65
@@ -360,20 +372,14 @@ def process_user_text(
     if debug and final_router_result is not None and parsed.message.strip():
         console.print(Panel(parsed.message, title="RAW ASSISTANT MESSAGE", border_style="dim"))
 
-    if parsed.action_intent is not None:
-        console.print(
-            Panel(
-                Pretty(_model_to_dict(parsed.action_intent), expand_all=True),
-                title="ACTION INTENT",
-                border_style="yellow",
-            )
-        )
+    if final_action_intent is not None:
+        show_action_intent(final_action_intent)
 
-    for resolved in resolver_results:
-        show_intent_resolver(resolved)
+    if final_resolver_result is not None:
+        show_intent_resolver(final_resolver_result)
 
-    for router_result in router_results:
-        show_command_router(router, router_result)
+    if final_router_result is not None:
+        show_command_router(router, final_router_result)
 
     if resolver_clarification is not None:
         show_resolver_clarification(resolver_clarification)
@@ -834,6 +840,16 @@ def show_command_router(router: CommandRouter, result: RouterCommandResult) -> N
         table.add_row("details", result.details)
 
     console.print(Panel(table, title="COMMAND ROUTER", border_style="magenta"))
+
+
+def show_action_intent(action_intent: object) -> None:
+    console.print(
+        Panel(
+            Pretty(_model_to_dict(action_intent), expand_all=True),
+            title="ACTION INTENT",
+            border_style="yellow",
+        )
+    )
 
 
 def show_intent_resolver(resolved: ResolvedIntent) -> None:

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from actions.apps import execute_app_action, normalize_target, preview_app_action
 from actions.browser_agent import execute_browser_task, preview_browser_task
+from actions.browser_agent import normalize_browser_task_target
 from actions.media import execute_media_action, preview_media_action
 from actions.minecraft_server import MINECRAFT_ACTIONS
 from actions.minecraft_server import execute_minecraft_server_action
@@ -282,6 +283,14 @@ BROWSER_ACTIONS = {
     "browser_task_run",
 }
 
+BROWSER_ACTION_ALIASES = {
+    "browser_task_run": "browser_task_run",
+    "launch_game_module": "browser_task_run",
+    "run_game_module": "browser_task_run",
+    "start_game_module": "browser_task_run",
+    "open_game_module": "browser_task_run",
+}
+
 GENERIC_VOLUME_ACTIONS = {
     "adjust_volume",
     "change_volume",
@@ -303,6 +312,7 @@ APP_ACTION_ALIASES = {
 
 ACTION_ALIASES = {
     **APP_ACTION_ALIASES,
+    **BROWSER_ACTION_ALIASES,
     "decrease_volume": "volume_down",
     "lower_volume": "volume_down",
     "volume_decrease": "volume_down",
@@ -632,7 +642,11 @@ def normalize_action(
         if seek_action is not None:
             return seek_action, normalized_target
 
-    return ACTION_ALIASES.get(normalized_action, normalized_action), normalized_target
+    resolved_action = ACTION_ALIASES.get(normalized_action, normalized_action)
+    if resolved_action in BROWSER_ACTIONS:
+        return resolved_action, normalize_browser_task_target(target)
+
+    return resolved_action, normalized_target
 
 
 def normalize_params(
@@ -814,8 +828,6 @@ def _format_details(
     user_text: str | None,
 ) -> str | None:
     parts = [part for part in (details, note) if part]
-    if user_text:
-        parts.append(f"user_text={user_text}")
     return "; ".join(parts) or None
 
 
