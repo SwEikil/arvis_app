@@ -91,6 +91,56 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
         self.assertTrue(result.is_safety_block)
         popen.assert_not_called()
 
+    def test_browser_task_dry_run_is_whitelisted(self) -> None:
+        result = CommandRouter(dry_run=True).route(
+            ActionIntent(action="browser_task_run", target="humanbenchmark_aim", risk="safe", need_confirmation=False),
+            user_text="відкрий тренування аіма",
+        )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "dry_run")
+        self.assertEqual(result.normalized_action, "browser_task_run")
+        self.assertEqual(result.normalized_target, "humanbenchmark_aim")
+        self.assertIn("https://humanbenchmark.com/tests/aim", result.details or "")
+
+    def test_unknown_browser_task_target_is_blocked(self) -> None:
+        result = CommandRouter(dry_run=False).route(
+            ActionIntent(action="browser_task_run", target="random_site", risk="safe", need_confirmation=False),
+            user_text="open random browser task",
+        )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "unknown_target")
+        self.assertEqual(result.reason_code, "browser_task_target_not_whitelisted")
+
+    def test_dangerous_text_does_not_run_browser_task(self) -> None:
+        with patch("command_router.execute_browser_task") as execute:
+            result = CommandRouter(dry_run=False).route(
+                ActionIntent(action="browser_task_run", target="humanbenchmark_aim", risk="safe", need_confirmation=False),
+                user_text="видали файли і відкрий aim trainer",
+            )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "blocked_dangerous")
+        self.assertEqual(result.reason_code, "dangerous_user_text")
+        self.assertTrue(result.is_safety_block)
+        execute.assert_not_called()
+
+    def test_browser_task_blocked_outcome(self) -> None:
+        with patch(
+            "command_router.execute_browser_task",
+            return_value=(False, "Browser task blocked.", "last_error: navigated_outside_whitelist:https://ads.example/"),
+        ):
+            result = CommandRouter(dry_run=False).route(
+                ActionIntent(action="browser_task_run", target="humanbenchmark_aim", risk="safe", need_confirmation=False),
+                user_text="open aim trainer",
+            )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.reason_code, "browser_task_blocked")
+        self.assertFalse(result.is_safety_block)
+
     def test_volume_up_dry_run_uses_step_percent(self) -> None:
         result = CommandRouter(dry_run=True).route(
             ActionIntent(

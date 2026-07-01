@@ -47,6 +47,7 @@ ALLOWED_ACTIONS = {
     "minecraft_server_metrics",
     "open_app",
     "launch_app",
+    "browser_task_run",
     "start_minecraft_server",
 }
 
@@ -72,6 +73,7 @@ ALLOWED_TARGETS = {
     "steam",
     "discord",
     "telegram",
+    "humanbenchmark_aim",
     "minecraft_server",
     "default",
 }
@@ -139,6 +141,12 @@ COMMAND_HINTS = {
     "трек",
     "пісня",
     "playing",
+    "тренування",
+    "аім",
+    "аіма",
+    "aim",
+    "trainer",
+    "benchmark",
     "логи",
     "logs",
     "ресурси",
@@ -492,6 +500,21 @@ APP_PHRASES: list[tuple[str, set[str]]] = [
     ),
 ]
 
+BROWSER_TASK_PHRASES: list[tuple[str, set[str]]] = [
+    (
+        "humanbenchmark_aim",
+        {
+            "відкрий тренування аіма",
+            "тренування аіма",
+            "аім тренер",
+            "aim trainer",
+            "open aim trainer",
+            "human benchmark aim",
+            "humanbenchmark aim",
+        },
+    ),
+]
+
 MINECRAFT_PHRASES: list[tuple[str, set[str]]] = [
     (
         "minecraft_server_status",
@@ -698,6 +721,10 @@ def resolve_with_heuristics(
     minecraft = _resolve_minecraft(text)
     if minecraft is not None:
         return _with_voice_correction(minecraft, correction)
+
+    browser_task = _resolve_browser_task(text)
+    if browser_task is not None:
+        return _with_voice_correction(browser_task, correction)
 
     negative_next = _resolve_negative_next(text)
     if negative_next is not None:
@@ -1124,6 +1151,22 @@ def _resolve_app(text: str) -> ResolvedIntent | None:
     return None
 
 
+def _resolve_browser_task(text: str) -> ResolvedIntent | None:
+    for target, phrases in BROWSER_TASK_PHRASES:
+        if _contains_any(text, phrases) or _meaning_match(text, phrases):
+            return ResolvedIntent(
+                action="browser_task_run",
+                target=target,
+                risk="safe",
+                need_confirmation=False,
+                confidence=0.9,
+                source="heuristic_user_text",
+                reason=f"User text asks to run browser task `{target}`.",
+                matched=f"browser_task_run:{target}",
+            )
+    return None
+
+
 def _resolve_minecraft(text: str) -> ResolvedIntent | None:
     for action, phrases in MINECRAFT_PHRASES:
         if _contains_any(text, phrases):
@@ -1237,6 +1280,7 @@ def _build_llm_prompt(user_text: str, command_history: list[dict[str, object]]) 
         "You are an intent resolver for a local assistant. Return ONLY JSON.\n"
         "Never return raw shell commands. Only use allowed actions.\n"
         "Use open_app only for whitelist apps/sites, never for arbitrary URLs.\n"
+        "Use browser_task_run only for whitelist browser tasks such as humanbenchmark_aim; never for arbitrary URLs.\n"
         "For Minecraft server phrases, use the local Minecraft Server Manager actions and do not ask for IP/domain.\n"
         f"Allowed actions: {sorted(ALLOWED_ACTIONS)}\n"
         "Optional params: step_percent for volume_up/volume_down, level_percent for volume_set, seconds for media_seek_forward/media_seek_backward.\n"

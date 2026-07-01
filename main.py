@@ -608,6 +608,7 @@ def show_actions() -> None:
     table.add_column("Status")
     rows = [
         ("open_app", "spotify, steam, brave, discord, telegram, youtube, google, github, chatgpt", "ready"),
+        ("browser_task_run", "humanbenchmark_aim", "experimental"),
         ("music_pause", "media", "ready"),
         ("music_next", "media", "ready"),
         ("music_previous", "media", "ready"),

@@ -157,6 +157,40 @@ Flatpak Brave example:
 YOUTUBE_COMMAND=flatpak run com.brave.Browser https://www.youtube.com/
 ```
 
+### Browser Vision Agent Experimental
+
+Browser Vision Agent is an experimental controlled browser session for whitelist-only browser tasks. It does not control the system mouse, does not attach to your normal Brave/Firefox session, and does not accept arbitrary URLs. v0.1 supports only:
+
+- `browser_task_run`, target `humanbenchmark_aim`
+- URL: `https://humanbenchmark.com/tests/aim`
+- Goal: click up to 30 confirmed Aim Trainer targets in a Playwright Chromium page
+
+Optional install:
+
+```bash
+.venv/bin/python -m pip install playwright opencv-python numpy
+.venv/bin/python -m playwright install chromium
+```
+
+Example:
+
+```text
+/dryrun off
+відкрий тренування аіма і порази 30 цілей
+```
+
+Safety boundaries: Browser Agent is whitelist-only, uses a Playwright page instead of full desktop control, does not use raw shell commands, and must not be used for CAPTCHA, login, payment, purchase, download, or dangerous workflows. If dependencies are missing, Arvis returns a setup message instead of failing startup.
+
+The agent only clicks high-confidence detected targets inside the allowed game area. It blocks common ad/tracker requests, closes unexpected popup tabs, handles cookie consent through DOM locators, and stops if the page leaves the whitelisted task URL or shows login/CAPTCHA/payment/download flows. It reports attempts separately from confirmed hits, so it will not claim 30 hits unless they are confirmed.
+
+Debug screenshots and per-iteration JSONL events are disabled by default. Enable locally when tuning detection:
+
+```bash
+ARVIS_BROWSER_DEBUG_SAVE=true
+```
+
+Debug files are written under `.runtime/browser_debug/`.
+
 Recommended first test:
 
 ```text
@@ -306,6 +340,7 @@ Resolver v0.3 спочатку блокує destructive phrases, потім пе
 - `Вруби споті` -> `open_app`, target `spotify`
 - `відкрий ютуб`, `открой ютуб`, `open youtube` -> `open_app`, target `youtube`
 - `відкрий google`, `відкрий github`, `відкрий chatgpt` -> whitelist website targets
+- `відкрий тренування аіма`, `open aim trainer` -> `browser_task_run`, target `humanbenchmark_aim`
 - `Постав це на паузу` -> `music_pause`
 - `Що зараз грає?` -> `media_status`
 - `зупини сервер`, `вимкни сервер` -> `minecraft_server_stop`, target `default`
@@ -421,6 +456,12 @@ Apps:
 - `launch_app`
 
 Whitelist app/site targets include `spotify`, `steam`, `brave`, `discord`, `telegram`, `youtube`, `google`, `github`, `chatgpt`.
+
+Browser tasks:
+
+- `browser_task_run`
+
+Whitelist browser task targets include `humanbenchmark_aim`. This action is experimental and requires optional Playwright/OpenCV setup.
 
 Minecraft:
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from actions.apps import APP_WHITELIST
+from actions.browser_agent import BROWSER_TASKS
 from command_router import CommandResult
 from intent_resolver import ResolvedIntent
 
@@ -34,13 +35,23 @@ def render_final_response(
         return f"Ця дія розпізнана, сер, але поки не підтримується: {reason_code or 'unsupported'}."
 
     if status == "not_configured":
+        if action == "browser_task_run":
+            return "Browser Agent треба спершу налаштувати: встанови playwright/opencv-python/numpy, сер."
         return f"Цю дію треба спершу налаштувати, сер: {reason_code or command_result.message}."
 
     if status == "unknown_action":
         return "Не знаю такої дозволеної дії, сер. Нічого не виконував."
 
+    if status == "blocked":
+        if action == "browser_task_run":
+            return "Browser task зупинено, сер: сторінка вийшла за межі дозволеного сценарію."
+        return "Дію зупинено, сер."
+
     if status == "unknown_target":
         target = command_result.normalized_target or command_result.original_target or ""
+        if action == "browser_task_run":
+            available_tasks = ", ".join(sorted(BROWSER_TASKS))
+            return f"Browser task не в whitelist, сер: {target}. Доступні: {available_tasks}."
         available = ", ".join(sorted(APP_WHITELIST))
         return (
             f"Ціль не в whitelist, сер: {target}. Доступні: {available}. "
@@ -166,6 +177,24 @@ def _render_generic_executed(action: str, result: CommandResult) -> str | None:
     if action in {"open_app", "launch_app"}:
         target = result.normalized_target or result.original_target or "app"
         return f"Запустив {_display_target(target)}, сер."
+    if action == "browser_task_run":
+        details = _parse_details(result.details)
+        max_targets = details.get("max_targets") or "30"
+        attempted_clicks = details.get("attempted_clicks") or "0"
+        confirmed_hits = details.get("confirmed_hits") or "0"
+        elapsed_seconds = details.get("elapsed_seconds") or "0.00"
+        final_site_result = (details.get("final_site_result_ms") or "").strip()
+        if final_site_result:
+            return (
+                f"Готово, сер. Підтверджено {confirmed_hits}/{max_targets} цілей за {elapsed_seconds} секунд. "
+                f"Результат сайту: {final_site_result}."
+            )
+        if confirmed_hits == max_targets:
+            return f"Готово, сер. Підтверджено {confirmed_hits}/{max_targets} цілей за {elapsed_seconds} секунд."
+        return (
+            "Завершив, сер, але не можу підтвердити "
+            f"{max_targets} попадань. Спроб: {attempted_clicks}, підтверджено: {confirmed_hits}, час: {elapsed_seconds} секунд."
+        )
     return None
 
 
@@ -174,6 +203,8 @@ def _render_dry_run(action: str, result: CommandResult) -> str:
     target = result.normalized_target or result.original_target or ""
     if action in {"open_app", "launch_app"}:
         return f"Dry-run, сер: я б запустив {_display_target(target)}, але реальна команда не виконувалась."
+    if action == "browser_task_run":
+        return f"Dry-run, сер: я б запустив browser task {_display_browser_task(target)}, але реальна дія не виконувалась."
     if action == "volume_up":
         return f"Dry-run, сер: я б збільшив гучність на {params.get('step_percent', 5)}%, але реальна команда не виконувалась."
     if action == "volume_down":
@@ -241,6 +272,13 @@ def _display_target(target: str) -> str:
         "chatgpt": "ChatGPT",
     }
     return names.get(target, target)
+
+
+def _display_browser_task(target: str) -> str:
+    task = BROWSER_TASKS.get(target)
+    if task is not None:
+        return task.display_name
+    return target
 
 
 def _parse_details(details: str | None) -> dict[str, str]:

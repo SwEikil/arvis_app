@@ -109,6 +109,87 @@ class ResponseRendererTests(unittest.TestCase):
         self.assertIn("збільшив гучність на 5%", rendered)
         self.assertIn("реальна команда не виконувалась", rendered)
 
+    def test_browser_task_dry_run_response(self) -> None:
+        result = self._result(
+            action="browser_task_run",
+            status="dry_run",
+            reason_code=None,
+            message="dry-run",
+            normalized_target="humanbenchmark_aim",
+        )
+
+        self.assertEqual(
+            render_final_response("", result),
+            "Dry-run, сер: я б запустив browser task HumanBenchmark Aim, але реальна дія не виконувалась.",
+        )
+
+    def test_browser_task_executed_response(self) -> None:
+        result = self._result(
+            action="browser_task_run",
+            status="executed",
+            reason_code=None,
+            message="done",
+            executed=True,
+            normalized_target="humanbenchmark_aim",
+            details="attempted_clicks: 30\nconfirmed_hits: 0\nmax_targets: 30\nelapsed_seconds: 12.40",
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("не можу підтвердити 30 попадань", rendered)
+        self.assertIn("Спроб: 30", rendered)
+        self.assertIn("підтверджено: 0", rendered)
+        self.assertNotIn("Поцілив 30", rendered)
+
+    def test_browser_task_confirmed_response(self) -> None:
+        result = self._result(
+            action="browser_task_run",
+            status="executed",
+            reason_code=None,
+            message="done",
+            executed=True,
+            normalized_target="humanbenchmark_aim",
+            details=(
+                "attempted_clicks: 30\n"
+                "confirmed_hits: 30\n"
+                "max_targets: 30\n"
+                "elapsed_seconds: 12.40\n"
+                "final_site_result_ms: 422 ms"
+            ),
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("Підтверджено 30/30", rendered)
+        self.assertIn("Результат сайту: 422 ms", rendered)
+
+    def test_browser_task_blocked_response(self) -> None:
+        result = self._result(
+            action="browser_task_run",
+            status="blocked",
+            reason_code="browser_task_blocked",
+            message="blocked",
+            normalized_target="humanbenchmark_aim",
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("Browser task зупинено", rendered)
+
+    def test_browser_task_not_configured_response(self) -> None:
+        result = self._result(
+            action="browser_task_run",
+            status="not_configured",
+            reason_code="browser_agent_not_configured",
+            message="missing deps",
+            normalized_target="humanbenchmark_aim",
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("Browser Agent треба спершу налаштувати", rendered)
+        self.assertIn("playwright/opencv-python/numpy", rendered)
+
     def test_unsupported_like_current_song(self) -> None:
         result = self._result(
             action="music_like_current",

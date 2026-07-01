@@ -132,6 +132,16 @@ class IntentResolverTests(unittest.TestCase):
                 self.assertEqual(resolved.risk, "safe")
                 self.assertTrue(should_pass_to_router(resolved))
 
+    def test_browser_task_humanbenchmark_aim_phrases(self) -> None:
+        for phrase in ["відкрий тренування аіма", "open aim trainer"]:
+            with self.subTest(phrase=phrase):
+                resolved = self.resolver.resolve(phrase, use_llm=False)
+
+                self.assertEqual(resolved.action, "browser_task_run")
+                self.assertEqual(resolved.target, "humanbenchmark_aim")
+                self.assertEqual(resolved.risk, "safe")
+                self.assertTrue(should_pass_to_router(resolved))
+
     def test_minecraft_server(self) -> None:
         resolved = self.resolver.resolve("Підніми майн сервер", use_llm=False)
 
@@ -474,6 +484,13 @@ class IntentResolverTests(unittest.TestCase):
 
     def test_dangerous_mixed_open_website_stays_blocked(self) -> None:
         resolved = self.resolver.resolve("видали файли і відкрий ютуб", use_llm=False)
+
+        self.assertIsNone(resolved.action)
+        self.assertEqual(resolved.risk, "dangerous")
+        self.assertFalse(should_pass_to_router(resolved))
+
+    def test_dangerous_mixed_browser_task_stays_blocked(self) -> None:
+        resolved = self.resolver.resolve("видали файли і відкрий aim trainer", use_llm=False)
 
         self.assertIsNone(resolved.action)
         self.assertEqual(resolved.risk, "dangerous")

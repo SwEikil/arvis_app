@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from actions.apps import execute_app_action, normalize_target, preview_app_action
+from actions.browser_agent import execute_browser_task, preview_browser_task
 from actions.media import execute_media_action, preview_media_action
 from actions.minecraft_server import MINECRAFT_ACTIONS
 from actions.minecraft_server import execute_minecraft_server_action
@@ -132,6 +133,18 @@ class CommandRouter:
                 None,
                 lambda: execute_app_action(action, target),
                 lambda: preview_app_action(action, target),
+            )
+
+        if action in BROWSER_ACTIONS:
+            return self._run_or_preview(
+                action,
+                target,
+                intent,
+                user_text,
+                params,
+                None,
+                lambda: execute_browser_task(target),
+                lambda: preview_browser_task(target),
             )
 
         if _normalize_action_name(intent.action) in GENERIC_VOLUME_ACTIONS:
@@ -263,6 +276,10 @@ VOLUME_ACTIONS = {
 APP_ACTIONS = {
     "open_app",
     "launch_app",
+}
+
+BROWSER_ACTIONS = {
+    "browser_task_run",
 }
 
 GENERIC_VOLUME_ACTIONS = {
@@ -738,6 +755,15 @@ def _classify_outcome(
 
     if action in APP_ACTIONS and "not in the whitelist" in message_text:
         return "unknown_target", "app_target_not_whitelisted", False
+
+    if action in BROWSER_ACTIONS and "not in the whitelist" in message_text:
+        return "unknown_target", "browser_task_target_not_whitelisted", False
+
+    if action in BROWSER_ACTIONS and "not configured" in message_text:
+        return "not_configured", "browser_agent_not_configured", False
+
+    if action in BROWSER_ACTIONS and "blocked" in message_text:
+        return "blocked", "browser_task_blocked", False
 
     if "not supported" in message_text:
         return "unsupported", "action_not_implemented", False
