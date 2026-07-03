@@ -2,6 +2,7 @@
   "name": "viewport_change_full",
   "mode": "viewport_change",
   "url_allowlist": ["https://example.com/"],
+  "start_url": "https://example.com/",
   "area": "visible_viewport",
   "region": {"type": "full"},
   "interval_ms": 500,

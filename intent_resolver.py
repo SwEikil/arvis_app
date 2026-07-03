@@ -80,7 +80,6 @@ ALLOWED_TARGETS = {
     "observer",
     "viewport_change_full",
     "text_appeared",
-    "text_appeared_example",
     "minecraft_server",
     "default",
 }

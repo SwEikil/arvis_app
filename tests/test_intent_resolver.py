@@ -174,6 +174,14 @@ class IntentResolverTests(unittest.TestCase):
         self.assertEqual(resolved.risk, "safe")
         self.assertTrue(should_pass_to_router(resolved))
 
+    def test_browser_watch_poll_text_appeared_phrase(self) -> None:
+        resolved = self.resolver.resolve("перевір профіль спостереження text_appeared", use_llm=False)
+
+        self.assertEqual(resolved.action, "browser_watch_poll_once")
+        self.assertEqual(resolved.target, "text_appeared")
+        self.assertEqual(resolved.risk, "safe")
+        self.assertTrue(should_pass_to_router(resolved))
+
     def test_minecraft_server(self) -> None:
         resolved = self.resolver.resolve("Підніми майн сервер", use_llm=False)
 

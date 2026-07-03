@@ -116,6 +116,28 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
         self.assertEqual(result.normalized_target, "viewport_change_full")
         self.assertIn("visible_viewport", result.details or "")
 
+    def test_browser_watch_poll_once_text_appeared_uses_canonical_name(self) -> None:
+        result = CommandRouter(dry_run=True).route(
+            ActionIntent(action="browser_watch_poll_once", target="text_appeared", risk="safe", need_confirmation=False),
+            user_text="перевір профіль спостереження text_appeared",
+        )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "dry_run")
+        self.assertEqual(result.normalized_target, "text_appeared")
+        self.assertIn("profile: text_appeared", result.details or "")
+        self.assertNotIn("text_appeared_example", result.details or "")
+
+    def test_browser_watch_status_lists_canonical_text_profile(self) -> None:
+        result = CommandRouter(dry_run=True).route(
+            ActionIntent(action="browser_watch_status", target="observer", risk="safe", need_confirmation=False),
+            user_text="статус спостереження",
+        )
+
+        self.assertEqual(result.status, "dry_run")
+        self.assertIn("text_appeared", result.details or "")
+        self.assertNotIn("text_appeared_example", result.details or "")
+
     def test_unknown_browser_watch_profile_is_blocked(self) -> None:
         result = CommandRouter(dry_run=False).route(
             ActionIntent(action="browser_watch_poll_once", target="random_site", risk="safe", need_confirmation=False),
@@ -126,11 +148,73 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
         self.assertEqual(result.status, "unknown_target")
         self.assertEqual(result.reason_code, "browser_watch_profile_not_whitelisted")
 
-    def test_browser_watch_poll_once_without_page_provider_is_not_configured(self) -> None:
-        result = CommandRouter(dry_run=False).route(
-            ActionIntent(action="browser_watch_poll_once", target="viewport_change_full", risk="safe", need_confirmation=False),
-            user_text="poll watch profile viewport_change_full",
+    def test_old_text_appeared_example_profile_is_unknown(self) -> None:
+        result = CommandRouter(dry_run=True).route(
+            ActionIntent(action="browser_watch_poll_once", target="text_appeared_example", risk="safe", need_confirmation=False),
+            user_text="poll watch profile text_appeared_example",
         )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "unknown_target")
+        self.assertEqual(result.reason_code, "browser_watch_profile_not_whitelisted")
+
+    def test_browser_watch_poll_once_event_found(self) -> None:
+        with patch(
+            "command_router.execute_browser_watch_action",
+            return_value=(True, "Browser observer event found.", "event_type: text_appeared\nmessage: found"),
+        ):
+            result = CommandRouter(dry_run=False).route(
+                ActionIntent(action="browser_watch_poll_once", target="viewport_change_full", risk="safe", need_confirmation=False),
+                user_text="poll watch profile viewport_change_full",
+            )
+
+        self.assertTrue(result.executed)
+        self.assertEqual(result.status, "executed")
+
+    def test_browser_watch_poll_once_no_event(self) -> None:
+        with patch(
+            "command_router.execute_browser_watch_action",
+            return_value=(False, "Browser observer found no event.", "event_type: no_event"),
+        ):
+            result = CommandRouter(dry_run=False).route(
+                ActionIntent(action="browser_watch_poll_once", target="viewport_change_full", risk="safe", need_confirmation=False),
+                user_text="poll watch profile viewport_change_full",
+            )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "no_event")
+
+    def test_browser_watch_poll_once_missing_dependency_is_not_configured(self) -> None:
+        with patch(
+            "command_router.execute_browser_watch_action",
+            return_value=(
+                False,
+                "Browser Observer is not configured.",
+                "reason_code: playwright_missing\nevent_type: observer_not_configured",
+            ),
+        ):
+            result = CommandRouter(dry_run=False).route(
+                ActionIntent(action="browser_watch_poll_once", target="viewport_change_full", risk="safe", need_confirmation=False),
+                user_text="poll watch profile viewport_change_full",
+            )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "not_configured")
+        self.assertEqual(result.reason_code, "browser_observer_not_configured")
+
+    def test_browser_watch_poll_once_missing_start_url_is_not_configured(self) -> None:
+        with patch(
+            "command_router.execute_browser_watch_action",
+            return_value=(
+                False,
+                "Browser Observer is not configured.",
+                "reason_code: profile_start_url_missing\nevent_type: observer_not_configured",
+            ),
+        ):
+            result = CommandRouter(dry_run=False).route(
+                ActionIntent(action="browser_watch_poll_once", target="viewport_change_full", risk="safe", need_confirmation=False),
+                user_text="poll watch profile viewport_change_full",
+            )
 
         self.assertFalse(result.executed)
         self.assertEqual(result.status, "not_configured")

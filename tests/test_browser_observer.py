@@ -62,7 +62,19 @@ class BrowserObserverTests(unittest.TestCase):
 
         self.assertEqual(profile.name, "viewport_change_full")
         self.assertEqual(profile.mode, "viewport_change")
+        self.assertEqual(profile.start_url, "https://example.com/")
         self.assertEqual(profile.region, {"type": "full"})
+
+    def test_text_appeared_profile_uses_canonical_name(self) -> None:
+        observer = BrowserObserver()
+
+        profile = observer.load_profile("examples/watch_profiles/text_appeared.json")
+        event = observer.poll_once(profile, FakePage(content="<h1>Example Domain</h1>"))
+
+        self.assertEqual(profile.name, "text_appeared")
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event.watch_id, "text_appeared")
 
     def test_url_allowlist_blocks_wrong_url_without_screenshot(self) -> None:
         profile = WatchProfile(name="watch", mode="viewport_change", url_allowlist=["https://example.com/"])

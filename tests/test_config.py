@@ -18,7 +18,14 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(reloaded.OLLAMA_HOST, "http://127.0.0.1:11434")
         self.assertEqual(reloaded.ARVIS_MODEL, "arvis")
+        self.assertFalse(reloaded.ARVIS_BROWSER_OBSERVER_HEADFUL)
         self.assertIsNone(reloaded.get_minecraft_server_config())
+
+    def test_browser_observer_headful_env_is_boolean(self) -> None:
+        with patch.dict(os.environ, {"ARVIS_BROWSER_OBSERVER_HEADFUL": "true"}, clear=True):
+            reloaded = importlib.reload(config)
+
+        self.assertTrue(reloaded.ARVIS_BROWSER_OBSERVER_HEADFUL)
 
     def test_minecraft_server_config_created_from_env_when_enabled(self) -> None:
         env = {

@@ -20,7 +20,6 @@ DEFAULT_MINECRAFT_SERVER_NAME = "Minecraft server"
 USER_NAME = os.getenv("USER_NAME", "user")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", DEFAULT_OLLAMA_HOST)
 ARVIS_MODEL = os.getenv("ARVIS_MODEL", DEFAULT_ARVIS_MODEL)
-
 MUSIC_FOLDER = os.getenv("MUSIC_FOLDER", "")
 DOWNLOADS_FOLDER = os.getenv("DOWNLOADS_FOLDER", "")
 
@@ -76,6 +75,9 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+ARVIS_BROWSER_OBSERVER_HEADFUL = _env_bool("ARVIS_BROWSER_OBSERVER_HEADFUL", default=False)
 
 
 def _normalize_key(value: str) -> str:

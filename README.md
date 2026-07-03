@@ -210,7 +210,22 @@ Safe observation actions:
 - `browser_watch_events`
 - `browser_watch_poll_once`, target `<profile_name>`
 
-v0.1 does not start a browser, attach over CDP, run a background daemon, click, or press keys. Router dry-run/status/events are available; real poll execution needs a future caller to inject a Playwright-like page and otherwise returns `not_configured`.
+Example:
+
+```text
+перевір профіль спостереження text_appeared
+```
+
+v0.2 can run `browser_watch_poll_once` through a controlled Playwright Chromium page provider. The provider opens only `start_url` from the selected profile, and `start_url` must be inside `url_allowlist`. Profiles still come from config files; natural language cannot provide arbitrary URLs.
+
+Runtime boundaries:
+
+- Uses a clean non-persistent Chromium context.
+- Defaults to headless mode.
+- Set `ARVIS_BROWSER_OBSERVER_HEADFUL=true` only for local visual debugging.
+- Does not attach to existing Brave/Firefox through CDP.
+- Does not use the system browser, `xdg-open`, `webbrowser.open`, or `open_app`.
+- Does not run a background daemon, click, press keys, submit forms, claim rewards, or perform anti-idle/farming behavior.
 
 Optional install for local browser/page experiments:
 
@@ -262,6 +277,7 @@ OLLAMA_HOST=http://127.0.0.1:11434 ARVIS_MODEL=arvis python main.py
 - `MUSIC_FOLDER`
 - `DOWNLOADS_FOLDER`
 - `STEAM_COMMAND`, `SPOTIFY_COMMAND`, `BRAVE_COMMAND`, `DISCORD_COMMAND`, `TELEGRAM_COMMAND`
+- `ARVIS_BROWSER_DEBUG_SAVE`, `ARVIS_BROWSER_OBSERVER_HEADFUL`
 - `ARVIS_VOICE_ENABLED`, `ARVIS_STT_BACKEND`, `ARVIS_STT_MODEL`, `ARVIS_STT_DEVICE`, `ARVIS_STT_COMPUTE_TYPE`, `ARVIS_MIC_DEVICE`, `ARVIS_VOICE_RECORD_SECONDS`, `ARVIS_VOICE_LANGUAGE`, `ARVIS_VOICE_ALLOWED_LANGUAGES`, `ARVIS_VOICE_MIN_RMS`, `ARVIS_VOICE_MIN_PEAK`, `ARVIS_VOICE_DEBUG_SAVE_LAST`
 - `MINECRAFT_SERVER_ENABLED`, `MINECRAFT_SERVER_KEY`, `MINECRAFT_SERVER_NAME`, `MINECRAFT_SERVER_CWD`, `MINECRAFT_SERVER_COMMAND`
 

@@ -39,7 +39,15 @@ def render_final_response(
         if action == "browser_task_run":
             return "Browser Agent треба спершу налаштувати: встанови playwright/opencv-python/numpy, сер."
         if action.startswith("browser_watch_"):
-            return f"Browser Observer ще не має підключеної browser page для poll-once, сер. {SAFETY_NOTICE}"
+            details = _parse_details(command_result.details)
+            reason = details.get("reason_code") or reason_code or ""
+            if reason == "profile_start_url_missing":
+                return f"Профіль спостереження без start_url, сер. Poll-once не запускав. {SAFETY_NOTICE}"
+            if reason == "playwright_missing":
+                return f"Browser Observer потребує Playwright, сер. Встанови optional dependency. {SAFETY_NOTICE}"
+            if reason == "playwright_browser_missing":
+                return f"Playwright Chromium не встановлений, сер. Запусти playwright install chromium. {SAFETY_NOTICE}"
+            return f"Browser Observer ще не налаштований для poll-once, сер. {SAFETY_NOTICE}"
         return f"Цю дію треба спершу налаштувати, сер: {reason_code or command_result.message}."
 
     if status == "unknown_action":
@@ -49,7 +57,7 @@ def render_final_response(
         if action == "browser_task_run":
             return "Browser task зупинено, сер: сторінка вийшла за межі дозволеного сценарію."
         if action.startswith("browser_watch_"):
-            return f"Observer заблоковано allowlist профілю, сер. Подію не зберігав. {SAFETY_NOTICE}"
+            return f"Observer заблоковано allowlist профілю, сер. Browser не запускав або подію не зберігав. {SAFETY_NOTICE}"
         return "Дію зупинено, сер."
 
     if status == "unknown_target":
@@ -86,7 +94,7 @@ def render_final_response(
             return generic_response
 
     if status == "no_event" and action.startswith("browser_watch_"):
-        return f"Події не знайшов, сер. {SAFETY_NOTICE}"
+        return f"Poll-once завершився, сер. Події не знайшов. {SAFETY_NOTICE}"
 
     return command_result.message
 
@@ -303,7 +311,7 @@ def _render_browser_watch_executed(action: str, result: CommandResult) -> str:
     if action == "browser_watch_poll_once":
         event_type = details.get("event_type") or "event"
         message = details.get("message") or result.message
-        return f"Знайшов подію спостереження, сер: {event_type}. {message}. {SAFETY_NOTICE}"
+        return f"Poll-once завершився, сер. Знайшов подію спостереження: {event_type}. {message}. {SAFETY_NOTICE}"
     return result.message
 
 

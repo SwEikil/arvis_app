@@ -138,6 +138,19 @@ class DoctorTests(unittest.TestCase):
 
             self.assertEqual(env_example.read_text(encoding="utf-8"), "KEEP=existing\n")
 
+    def test_browser_observer_headful_is_known_env_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / ".env.example").write_text("ARVIS_BROWSER_OBSERVER_HEADFUL=false\n", encoding="utf-8")
+
+            checks = doctor.check_local_config(
+                root,
+                {"ARVIS_BROWSER_OBSERVER_HEADFUL": "true"},
+                doctor.DoctorOptions(verbose=True),
+            )
+
+        self.assertFalse(any(check.title == "Unknown local env keys are present" for check in checks))
+
     def test_fix_does_not_overwrite_existing_file_at_safe_dir_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

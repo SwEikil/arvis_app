@@ -136,6 +136,7 @@ Important files and responsibilities:
 - `actions/` - desktop, media, volume, Minecraft, app/site launch, and whitelisted browser action implementations.
 - `actions/browser_agent.py` - narrow experimental controlled-browser tasks. Do not turn this into a generic public auto-clicker.
 - `actions/browser_observer.py` - public-safe browser observation core. It is eyes/events only; private ignored extensions are hands/actions.
+- `actions/browser_observer_runtime.py` - controlled Playwright page provider for observation-only browser poll-once. No generic actions.
 - `voice_config.py`, `voice_input.py`, `voice_ducking.py`, `voice_text_normalizer.py` - optional voice pipeline.
 - `tests/` - unittest-based coverage.
 
@@ -206,6 +207,9 @@ For generic browser observation modules:
 
 - Only observe, detect, log, and notify.
 - Public observer = eyes/events, private extension = hands/actions.
+- A clean Playwright Chromium page provider is allowed for observation-only `browser_watch_poll_once`.
+- Public observer runtime must not attach to existing browser sessions through CDP, use system browser launchers, or use persistent user profiles.
+- Background daemons, start/stop watchers, and private action modules are future/private work unless explicitly scoped and kept out of generic public actions.
 - Watch the visible browser viewport first, not a fixed desktop pixel region.
 - Fixed regions are optional optimizations only.
 - Regions must be relative to the browser viewport, not absolute monitor or desktop pixels.

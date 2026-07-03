@@ -1,7 +1,8 @@
 {
-  "name": "text_appeared_example",
+  "name": "text_appeared",
   "mode": "text_appeared",
   "url_allowlist": ["https://example.com/"],
+  "start_url": "https://example.com/",
   "text": "Example Domain",
   "interval_ms": 1000,
   "timeout_seconds": 300,

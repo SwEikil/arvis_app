@@ -167,17 +167,32 @@ class ResponseRendererTests(unittest.TestCase):
         self.assertIn("Події не знайшов", rendered)
         self.assertIn("Generic кліки/натискання", rendered)
 
-    def test_browser_watch_not_configured_response(self) -> None:
+    def test_browser_watch_missing_start_url_response(self) -> None:
         result = self._result(
             action="browser_watch_poll_once",
             status="not_configured",
             reason_code="browser_observer_not_configured",
-            message="page provider missing",
+            message="missing start_url",
+            details="reason_code: profile_start_url_missing",
         )
 
         rendered = render_final_response("", result)
 
-        self.assertIn("page", rendered)
+        self.assertIn("start_url", rendered)
+        self.assertIn("Generic кліки/натискання", rendered)
+
+    def test_browser_watch_missing_playwright_response(self) -> None:
+        result = self._result(
+            action="browser_watch_poll_once",
+            status="not_configured",
+            reason_code="browser_observer_not_configured",
+            message="missing dependency",
+            details="reason_code: playwright_missing",
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("Playwright", rendered)
         self.assertIn("Generic кліки/натискання", rendered)
 
     def test_browser_task_executed_response(self) -> None:

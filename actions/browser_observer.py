@@ -26,6 +26,7 @@ class WatchProfile:
     name: str
     mode: str
     url_allowlist: list[str]
+    start_url: str | None = None
     interval_ms: int = 500
     timeout_seconds: int | None = None
     area: str = "visible_viewport"
@@ -117,6 +118,7 @@ class BrowserObserver:
             name=str(data["name"]),
             mode=str(data["mode"]),
             url_allowlist=list(data.get("url_allowlist") or []),
+            start_url=data.get("start_url"),
             interval_ms=int(data.get("interval_ms", 500)),
             timeout_seconds=data.get("timeout_seconds"),
             area=str(data.get("area", "visible_viewport")),
@@ -352,11 +354,20 @@ def execute_browser_watch_action(
         if profile is None:
             return False, "Browser watch profile is not in the whitelist.", f"target: {normalize_browser_watch_profile_name(target)}"
         if page is None:
-            return (
-                False,
-                "Browser Observer is not configured: page provider missing.",
-                f"profile: {profile.name}\nreason_code: browser_observer_page_provider_missing\n{_profile_details(profile)}",
-            )
+            from actions.browser_observer_runtime import BrowserObserverRuntime
+
+            result = BrowserObserverRuntime(project_root=root).poll_once(profile)
+            if result.event is not None:
+                return _event_to_router_tuple(result.event)
+            if result.status == "no_event":
+                return False, "Browser observer found no event.", result.details
+            if result.status == "blocked":
+                return False, "Browser observer blocked.", result.details
+            if result.status == "not_configured":
+                return False, "Browser Observer is not configured.", result.details
+            if result.status == "error":
+                return False, "Browser observer error.", result.details
+            return False, result.message, result.details
         event = observer.poll_once(profile, page)
         if event is None:
             return False, "Browser observer found no event.", f"profile: {profile.name}\nevent_type: no_event\n{SAFETY_NOTICE}"
@@ -415,6 +426,7 @@ def _profile_details(profile: WatchProfile) -> str:
         [
             f"profile: {profile.name}",
             f"mode: {profile.mode}",
+            f"start_url: {profile.start_url or ''}",
             f"url_allowlist: {', '.join(profile.url_allowlist)}",
             f"area: {profile.area}",
             f"region: {json.dumps(profile.region, ensure_ascii=False, sort_keys=True) if profile.region else 'full'}",
