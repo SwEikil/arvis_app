@@ -123,6 +123,8 @@ Optional browser-vision/observer dependencies must also be imported lazily. Text
 Important files and responsibilities:
 
 - `main.py` - REPL loop, slash commands, history, reload handling, voice command entry points.
+- `arvis_mcp_server.py` - standalone stdio MCP context servant for coding agents.
+- `project_context.py` - safe, deterministic project facts/search/excerpt/git/memory helpers.
 - `ollama_client.py` - Ollama API access.
 - `intent_parser.py` - parsing model responses into assistant text and structured intents.
 - `intent_resolver.py` - deterministic/LLM fallback resolver. It must not execute actions.
@@ -137,6 +139,21 @@ Important files and responsibilities:
 - `tests/` - unittest-based coverage.
 
 If a future `actions/browser_observer.py` or similar module is added, it should be observation-first: detect and emit events, not perform generic actions.
+
+## MCP context servant workflow
+
+When the Arvis MCP context servant is available, coding agents should use it as a small fact helper, not as the main programmer.
+
+- Before broad project exploration, request a compact `task_brief`.
+- Use `grep_project` and `read_file_excerpt` for targeted context.
+- Treat MCP output as hints, not truth.
+- Verify files directly before editing.
+- Never ask Arvis MCP to modify source code.
+- Keep context requests small and specific.
+- Prefer minimal patches.
+- Run tests after changes.
+- Ask before adding heavy dependencies.
+- Do not commit personal MCP client config, local Codex config, private paths, tokens, secrets, or `.arvis_mcp_memory/`.
 
 ## Core safety rules
 

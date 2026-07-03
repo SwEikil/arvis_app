@@ -9,6 +9,8 @@ venv/
 logs/
 .cache/
 .runtime/
+.arvis_mcp_memory/
+.codex/
 models/
 ollama-models/
 *.gguf
