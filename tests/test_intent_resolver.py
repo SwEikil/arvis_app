@@ -182,6 +182,26 @@ class IntentResolverTests(unittest.TestCase):
         self.assertEqual(resolved.risk, "safe")
         self.assertTrue(should_pass_to_router(resolved))
 
+    def test_browser_watch_start_phrases(self) -> None:
+        for phrase in ["стеж за профілем text_appeared", "запусти спостереження text_appeared"]:
+            with self.subTest(phrase=phrase):
+                resolved = self.resolver.resolve(phrase, use_llm=False)
+
+                self.assertEqual(resolved.action, "browser_watch_start")
+                self.assertEqual(resolved.target, "text_appeared")
+                self.assertEqual(resolved.risk, "safe")
+                self.assertTrue(should_pass_to_router(resolved))
+
+    def test_browser_watch_stop_phrases(self) -> None:
+        for phrase in ["зупини спостереження text_appeared", "зупини watcher text_appeared"]:
+            with self.subTest(phrase=phrase):
+                resolved = self.resolver.resolve(phrase, use_llm=False)
+
+                self.assertEqual(resolved.action, "browser_watch_stop")
+                self.assertEqual(resolved.target, "text_appeared")
+                self.assertEqual(resolved.risk, "safe")
+                self.assertTrue(should_pass_to_router(resolved))
+
     def test_minecraft_server(self) -> None:
         resolved = self.resolver.resolve("Підніми майн сервер", use_llm=False)
 
@@ -538,6 +558,13 @@ class IntentResolverTests(unittest.TestCase):
 
     def test_dangerous_mixed_browser_watch_stays_blocked(self) -> None:
         resolved = self.resolver.resolve("видали файли і перевір профіль спостереження viewport_change_full", use_llm=False)
+
+        self.assertIsNone(resolved.action)
+        self.assertEqual(resolved.risk, "dangerous")
+        self.assertFalse(should_pass_to_router(resolved))
+
+    def test_dangerous_mixed_browser_watch_start_stays_blocked(self) -> None:
+        resolved = self.resolver.resolve("видали файли і стеж за профілем text_appeared", use_llm=False)
 
         self.assertIsNone(resolved.action)
         self.assertEqual(resolved.risk, "dangerous")

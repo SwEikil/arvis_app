@@ -15,6 +15,7 @@ from rich.table import Table
 from command_router import CommandResult as RouterCommandResult
 from command_router import CommandRouter
 from command_router import should_try_intent_resolver
+from actions.browser_watch_manager import shutdown_all_browser_watch_managers
 from doctor import DoctorOptions
 from doctor import doctor_exit_code
 from doctor import parse_doctor_args
@@ -141,6 +142,8 @@ def main() -> None:
             command_counter,
         )
 
+    shutdown_all_browser_watch_managers()
+
 
 class ReplCommandResult:
     def __init__(
@@ -171,6 +174,7 @@ def handle_command(
     command = user_text.lower()
 
     if command in {"/exit", "/quit"}:
+        shutdown_all_browser_watch_managers()
         console.print("[dim]Вихід.[/dim]")
         return ReplCommandResult(True, True, session_summary, debug)
 
@@ -188,6 +192,7 @@ def handle_command(
             console.print("[yellow]Не вдалось зберегти runtime state. Перезапускаю без нього.[/yellow]")
 
         try:
+            shutdown_all_browser_watch_managers()
             restart_current_process()
         except OSError as error:
             console.print(
@@ -615,6 +620,11 @@ def show_actions() -> None:
     rows = [
         ("open_app", "spotify, steam, brave, discord, telegram, youtube, google, github, chatgpt", "ready"),
         ("browser_task_run", "humanbenchmark_aim", "experimental"),
+        ("browser_watch_start", "text_appeared, viewport_change_full", "ready if Playwright configured"),
+        ("browser_watch_stop", "profile/watch id", "ready"),
+        ("browser_watch_status", "observer", "ready"),
+        ("browser_watch_events", "observer/profile", "ready"),
+        ("browser_watch_poll_once", "text_appeared, viewport_change_full", "ready if Playwright configured"),
         ("music_pause", "media", "ready"),
         ("music_next", "media", "ready"),
         ("music_previous", "media", "ready"),

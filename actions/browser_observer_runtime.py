@@ -26,6 +26,24 @@ class BrowserRuntimeResult:
     details: str | None = None
 
 
+@dataclass
+class BrowserPageSession:
+    manager: object | None
+    browser: object | None
+    context: object | None
+    page: object
+    headless: bool
+
+    def close(self) -> None:
+        _close_quietly(self.context)
+        _close_quietly(self.browser)
+        if self.manager is not None:
+            try:
+                self.manager.__exit__(None, None, None)
+            except Exception:
+                pass
+
+
 class PlaywrightPageProvider:
     def __init__(
         self,
@@ -38,6 +56,53 @@ class PlaywrightPageProvider:
         self.goto_timeout_ms = goto_timeout_ms
 
     def with_page(self, start_url: str, callback: Callable[[object], WatchEvent | None]) -> BrowserRuntimeResult:
+        session_result = self.open_page(start_url)
+        if isinstance(session_result, BrowserRuntimeResult):
+            return session_result
+        session = session_result
+        try:
+            event = callback(session.page)
+            if event is None:
+                return BrowserRuntimeResult(
+                    status="no_event",
+                    reason_code=None,
+                    message="Browser observer poll-once completed with no event.",
+                    details=_details(
+                        {
+                            "event_type": "no_event",
+                            "start_url": start_url,
+                            "headless": str(session.headless),
+                            "reason_code": "",
+                        }
+                    ),
+                )
+            return BrowserRuntimeResult(
+                status="event",
+                reason_code=None,
+                message="Browser observer event found.",
+                event=event,
+                details=_details({"event_type": event.event_type, "start_url": start_url, "headless": str(session.headless)}),
+            )
+        except Exception as exc:
+            return BrowserRuntimeResult(
+                status="error",
+                reason_code="browser_observer_runtime_error",
+                message=f"Browser Observer runtime error: {type(exc).__name__}",
+                details=_details(
+                    {
+                        "reason_code": "browser_observer_runtime_error",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                        "start_url": start_url,
+                        "headless": str(session.headless),
+                        "notice": SAFETY_NOTICE,
+                    }
+                ),
+            )
+        finally:
+            session.close()
+
+    def open_page(self, start_url: str) -> BrowserPageSession | BrowserRuntimeResult:
         try:
             from playwright.sync_api import sync_playwright
         except Exception as exc:
@@ -64,29 +129,15 @@ class PlaywrightPageProvider:
             context = browser.new_context(viewport=self.viewport)
             page = context.new_page()
             page.goto(start_url, wait_until="domcontentloaded", timeout=self.goto_timeout_ms)
-            event = callback(page)
-            if event is None:
-                return BrowserRuntimeResult(
-                    status="no_event",
-                    reason_code=None,
-                    message="Browser observer poll-once completed with no event.",
-                    details=_details(
-                        {
-                            "event_type": "no_event",
-                            "start_url": start_url,
-                            "headless": str(not self.headful),
-                            "reason_code": "",
-                        }
-                    ),
-                )
-            return BrowserRuntimeResult(
-                status="event",
-                reason_code=None,
-                message="Browser observer event found.",
-                event=event,
-                details=_details({"event_type": event.event_type, "start_url": start_url, "headless": str(not self.headful)}),
-            )
+            return BrowserPageSession(manager=manager, browser=browser, context=context, page=page, headless=not self.headful)
         except Exception as exc:
+            _close_quietly(context)
+            _close_quietly(browser)
+            if manager is not None:
+                try:
+                    manager.__exit__(None, None, None)
+                except Exception:
+                    pass
             if _looks_like_playwright_install_issue(exc):
                 return _not_configured(
                     "playwright_browser_missing",
@@ -108,14 +159,6 @@ class PlaywrightPageProvider:
                     }
                 ),
             )
-        finally:
-            _close_quietly(context)
-            _close_quietly(browser)
-            if manager is not None:
-                try:
-                    manager.__exit__(None, None, None)
-                except Exception:
-                    pass
 
 
 class BrowserObserverRuntime:

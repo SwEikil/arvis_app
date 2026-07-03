@@ -48,6 +48,8 @@ ALLOWED_ACTIONS = {
     "open_app",
     "launch_app",
     "browser_task_run",
+    "browser_watch_start",
+    "browser_watch_stop",
     "browser_watch_status",
     "browser_watch_events",
     "browser_watch_poll_once",
@@ -1205,6 +1207,34 @@ def _resolve_browser_task(text: str) -> ResolvedIntent | None:
 
 
 def _resolve_browser_watch(text: str) -> ResolvedIntent | None:
+    start_match = re.search(r"(?:стеж за профілем|запусти спостереження)\s+([a-z0-9_-]+(?:\s+[a-z0-9_-]+)*)", text)
+    if start_match:
+        profile_name = "_".join(start_match.group(1).split())
+        return ResolvedIntent(
+            action="browser_watch_start",
+            target=profile_name,
+            risk="safe",
+            need_confirmation=False,
+            confidence=0.9,
+            source="heuristic_user_text",
+            reason="User text asks to start a configured browser observer profile.",
+            matched="browser_watch_start",
+        )
+
+    stop_match = re.search(r"(?:зупини спостереження|зупини watcher)\s+([a-z0-9_-]+(?:\s+[a-z0-9_-]+)*)", text)
+    if stop_match:
+        profile_name = "_".join(stop_match.group(1).split())
+        return ResolvedIntent(
+            action="browser_watch_stop",
+            target=profile_name,
+            risk="safe",
+            need_confirmation=False,
+            confidence=0.9,
+            source="heuristic_user_text",
+            reason="User text asks to stop a browser observer watch.",
+            matched="browser_watch_stop",
+        )
+
     if _contains_any(text, {"статус спостереження", "browser watch status", "watch status"}):
         return ResolvedIntent(
             action="browser_watch_status",

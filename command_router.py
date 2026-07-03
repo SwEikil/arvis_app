@@ -6,9 +6,9 @@ from dataclasses import dataclass
 from actions.apps import execute_app_action, normalize_target, preview_app_action
 from actions.browser_agent import execute_browser_task, preview_browser_task
 from actions.browser_agent import normalize_browser_task_target
-from actions.browser_observer import execute_browser_watch_action
 from actions.browser_observer import normalize_browser_watch_profile_name
-from actions.browser_observer import preview_browser_watch_action
+from actions.browser_watch_manager import execute_browser_watch_action
+from actions.browser_watch_manager import preview_browser_watch_action
 from actions.media import execute_media_action, preview_media_action
 from actions.minecraft_server import MINECRAFT_ACTIONS
 from actions.minecraft_server import execute_minecraft_server_action
@@ -299,6 +299,8 @@ BROWSER_ACTIONS = {
 }
 
 BROWSER_WATCH_ACTIONS = {
+    "browser_watch_start",
+    "browser_watch_stop",
     "browser_watch_status",
     "browser_watch_events",
     "browser_watch_poll_once",
@@ -310,6 +312,8 @@ BROWSER_ACTION_ALIASES = {
     "run_game_module": "browser_task_run",
     "start_game_module": "browser_task_run",
     "open_game_module": "browser_task_run",
+    "browser_watch_start": "browser_watch_start",
+    "browser_watch_stop": "browser_watch_stop",
     "browser_watch_status": "browser_watch_status",
     "browser_watch_events": "browser_watch_events",
     "browser_watch_poll_once": "browser_watch_poll_once",
@@ -813,6 +817,18 @@ def _classify_outcome(
 
     if action in BROWSER_WATCH_ACTIONS and "blocked" in message_text:
         return "blocked", "browser_observer_blocked", False
+
+    if action in BROWSER_WATCH_ACTIONS and "already running" in message_text:
+        return "already_running", "browser_watch_already_running", False
+
+    if action in BROWSER_WATCH_ACTIONS and "not running" in message_text:
+        return "not_running", "browser_watch_not_running", False
+
+    if action in BROWSER_WATCH_ACTIONS and "not found" in message_text:
+        return "unknown_target", "browser_watch_not_found", False
+
+    if action in BROWSER_WATCH_ACTIONS and "limit reached" in message_text:
+        return "blocked", "too_many_browser_watches", False
 
     if action in BROWSER_WATCH_ACTIONS and "error" in message_text:
         return "command_failed", "browser_observer_error", False

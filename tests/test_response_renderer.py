@@ -123,7 +123,7 @@ class ResponseRendererTests(unittest.TestCase):
             "Dry-run, сер: я б запустив browser task HumanBenchmark Aim, але реальна дія не виконувалась.",
         )
 
-    def test_browser_watch_poll_dry_run_response_includes_notice(self) -> None:
+    def test_browser_watch_poll_dry_run_response_does_not_spam_notice(self) -> None:
         result = self._result(
             action="browser_watch_poll_once",
             status="dry_run",
@@ -136,7 +136,7 @@ class ResponseRendererTests(unittest.TestCase):
 
         self.assertIn("Dry-run", rendered)
         self.assertIn("viewport_change_full", rendered)
-        self.assertIn("Generic кліки/натискання", rendered)
+        self.assertNotIn("Generic кліки", rendered)
 
     def test_browser_watch_event_found_response(self) -> None:
         result = self._result(
@@ -152,7 +152,149 @@ class ResponseRendererTests(unittest.TestCase):
 
         self.assertIn("Знайшов подію спостереження", rendered)
         self.assertIn("text_appeared", rendered)
-        self.assertIn("Generic кліки/натискання", rendered)
+        self.assertNotIn("Generic кліки", rendered)
+
+    def test_browser_watch_started_response(self) -> None:
+        result = self._result(
+            action="browser_watch_start",
+            status="executed",
+            reason_code=None,
+            message="Browser watch started.",
+            executed=True,
+            details="watch_id=text_appeared\nprofile=text_appeared",
+            normalized_target="text_appeared",
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("Запустив фонове спостереження", rendered)
+        self.assertIn("text_appeared", rendered)
+        self.assertIn("Режим спостереження: без кліків і натискань.", rendered)
+
+    def test_browser_watch_already_running_response(self) -> None:
+        result = self._result(
+            action="browser_watch_start",
+            status="already_running",
+            reason_code="browser_watch_already_running",
+            message="Browser watch already running.",
+            details="watch_id=text_appeared",
+            normalized_target="text_appeared",
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("вже працює", rendered)
+        self.assertIn("text_appeared", rendered)
+
+    def test_browser_watch_stopped_response(self) -> None:
+        result = self._result(
+            action="browser_watch_stop",
+            status="executed",
+            reason_code=None,
+            message="Browser watch stopped.",
+            executed=True,
+            details="watch_id=text_appeared\nprofile=text_appeared",
+            normalized_target="text_appeared",
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("Зупинив фонове спостереження", rendered)
+        self.assertIn("text_appeared", rendered)
+        self.assertNotIn("Generic кліки", rendered)
+
+    def test_browser_watch_not_found_response(self) -> None:
+        result = self._result(
+            action="browser_watch_stop",
+            status="unknown_target",
+            reason_code="browser_watch_not_found",
+            message="Browser watch not found.",
+            normalized_target="missing",
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("Не знаю такого профілю", rendered)
+        self.assertIn("missing", rendered)
+
+    def test_browser_watch_page_signal_blocked_response(self) -> None:
+        result = self._result(
+            action="browser_watch_start",
+            status="blocked",
+            reason_code="browser_observer_blocked",
+            message="Browser observer blocked.",
+            details="block_type=page_signal\nsignal=captcha\nlast_error=blocked_page_signal:captcha",
+            normalized_target="text_appeared",
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("safety signal сторінки: captcha", rendered)
+        self.assertNotIn("allowlist", rendered)
+
+    def test_browser_watch_allowlist_blocked_response(self) -> None:
+        result = self._result(
+            action="browser_watch_start",
+            status="blocked",
+            reason_code="browser_observer_blocked",
+            message="Browser observer blocked.",
+            details="block_type=url_allowlist\ncurrent_url=https://evil.example/\nlast_error=url_outside_allowlist:https://evil.example/",
+            normalized_target="text_appeared",
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("URL поза allowlist профілю", rendered)
+        self.assertNotIn("safety signal", rendered)
+
+    def test_browser_watch_not_running_response(self) -> None:
+        result = self._result(
+            action="browser_watch_stop",
+            status="not_running",
+            reason_code="browser_watch_not_running",
+            message="Browser watch is not running.",
+            details="watch_id=text_appeared\nprofile=text_appeared\nlast_status=error\nlast_error=poll_once RuntimeError: page closed",
+            normalized_target="text_appeared",
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("Немає активного спостереження text_appeared", rendered)
+        self.assertIn("Останній стан: error", rendered)
+        self.assertIn("page closed", rendered)
+        self.assertNotIn("Generic кліки", rendered)
+
+    def test_browser_watch_status_response(self) -> None:
+        result = self._result(
+            action="browser_watch_status",
+            status="executed",
+            reason_code=None,
+            message="Browser watch status.",
+            executed=True,
+            details="profiles: text_appeared\nactive_count: 1\nevents_count: 2",
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("Active watches: 1", rendered)
+        self.assertIn("Events: 2", rendered)
+
+    def test_browser_watch_status_zero_active_does_not_say_active(self) -> None:
+        result = self._result(
+            action="browser_watch_status",
+            status="executed",
+            reason_code=None,
+            message="Browser watch status.",
+            executed=True,
+            details="profiles: text_appeared\nactive_count: 0\nevents_count: 2",
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("доступний", rendered)
+        self.assertIn("Активних спостережень немає", rendered)
+        self.assertNotIn("активний", rendered)
+        self.assertNotIn("Generic кліки", rendered)
 
     def test_browser_watch_no_event_response(self) -> None:
         result = self._result(
@@ -165,7 +307,22 @@ class ResponseRendererTests(unittest.TestCase):
         rendered = render_final_response("", result)
 
         self.assertIn("Події не знайшов", rendered)
-        self.assertIn("Generic кліки/натискання", rendered)
+        self.assertNotIn("Generic кліки", rendered)
+
+    def test_browser_watch_events_response_does_not_spam_notice(self) -> None:
+        result = self._result(
+            action="browser_watch_events",
+            status="executed",
+            reason_code=None,
+            message="Browser watch events.",
+            executed=True,
+            details="events_count: 1\nlast_events: now text_appeared text_appeared",
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("Показую Browser Observer events", rendered)
+        self.assertNotIn("Generic кліки", rendered)
 
     def test_browser_watch_missing_start_url_response(self) -> None:
         result = self._result(
@@ -179,7 +336,7 @@ class ResponseRendererTests(unittest.TestCase):
         rendered = render_final_response("", result)
 
         self.assertIn("start_url", rendered)
-        self.assertIn("Generic кліки/натискання", rendered)
+        self.assertNotIn("Generic кліки", rendered)
 
     def test_browser_watch_missing_playwright_response(self) -> None:
         result = self._result(
@@ -193,7 +350,7 @@ class ResponseRendererTests(unittest.TestCase):
         rendered = render_final_response("", result)
 
         self.assertIn("Playwright", rendered)
-        self.assertIn("Generic кліки/натискання", rendered)
+        self.assertNotIn("Generic кліки", rendered)
 
     def test_browser_task_executed_response(self) -> None:
         result = self._result(

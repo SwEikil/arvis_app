@@ -138,6 +138,103 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
         self.assertIn("text_appeared", result.details or "")
         self.assertNotIn("text_appeared_example", result.details or "")
 
+    def test_browser_watch_start_dry_run(self) -> None:
+        result = CommandRouter(dry_run=True).route(
+            ActionIntent(action="browser_watch_start", target="text_appeared", risk="safe", need_confirmation=False),
+            user_text="стеж за профілем text_appeared",
+        )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "dry_run")
+        self.assertEqual(result.normalized_action, "browser_watch_start")
+        self.assertIn("profile: text_appeared", result.details or "")
+
+    def test_browser_watch_start_execution_uses_manager(self) -> None:
+        with patch(
+            "command_router.execute_browser_watch_action",
+            return_value=(True, "Browser watch started.", "watch_id=text_appeared\nprofile=text_appeared"),
+        ):
+            result = CommandRouter(dry_run=False).route(
+                ActionIntent(action="browser_watch_start", target="text_appeared", risk="safe", need_confirmation=False),
+                user_text="стеж за профілем text_appeared",
+            )
+
+        self.assertTrue(result.executed)
+        self.assertEqual(result.status, "executed")
+
+    def test_browser_watch_stop_execution_uses_manager(self) -> None:
+        with patch(
+            "command_router.execute_browser_watch_action",
+            return_value=(True, "Browser watch stopped.", "watch_id=text_appeared\nprofile=text_appeared"),
+        ):
+            result = CommandRouter(dry_run=False).route(
+                ActionIntent(action="browser_watch_stop", target="text_appeared", risk="safe", need_confirmation=False),
+                user_text="зупини спостереження text_appeared",
+            )
+
+        self.assertTrue(result.executed)
+        self.assertEqual(result.status, "executed")
+
+    def test_browser_watch_stop_unknown_is_unknown_target(self) -> None:
+        with patch(
+            "command_router.execute_browser_watch_action",
+            return_value=(False, "Browser watch not found.", "watch_id=missing"),
+        ):
+            result = CommandRouter(dry_run=False).route(
+                ActionIntent(action="browser_watch_stop", target="missing", risk="safe", need_confirmation=False),
+                user_text="зупини спостереження missing",
+            )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "unknown_target")
+        self.assertEqual(result.reason_code, "browser_watch_not_found")
+
+    def test_browser_watch_stop_known_not_running_is_not_unknown(self) -> None:
+        with patch(
+            "command_router.execute_browser_watch_action",
+            return_value=(
+                False,
+                "Browser watch is not running.",
+                "watch_id=text_appeared\nprofile=text_appeared\nlast_status=error\nlast_error=poll_once RuntimeError: page closed",
+            ),
+        ):
+            result = CommandRouter(dry_run=False).route(
+                ActionIntent(action="browser_watch_stop", target="text_appeared", risk="safe", need_confirmation=False),
+                user_text="зупини спостереження text_appeared",
+            )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "not_running")
+        self.assertEqual(result.reason_code, "browser_watch_not_running")
+
+    def test_browser_watch_status_active_watchers(self) -> None:
+        with patch(
+            "command_router.execute_browser_watch_action",
+            return_value=(True, "Browser watch status.", "profiles: text_appeared\nactive_count: 1\nevents_count: 2"),
+        ):
+            result = CommandRouter(dry_run=False).route(
+                ActionIntent(action="browser_watch_status", target="observer", risk="safe", need_confirmation=False),
+                user_text="статус спостереження",
+            )
+
+        self.assertTrue(result.executed)
+        self.assertEqual(result.status, "executed")
+        self.assertIn("active_count: 1", result.details or "")
+
+    def test_browser_watch_events_list(self) -> None:
+        with patch(
+            "command_router.execute_browser_watch_action",
+            return_value=(True, "Browser watch events.", "events_count: 1\nlast_events: now text_appeared text_appeared"),
+        ):
+            result = CommandRouter(dry_run=False).route(
+                ActionIntent(action="browser_watch_events", target="observer", risk="safe", need_confirmation=False),
+                user_text="покажи події спостереження",
+            )
+
+        self.assertTrue(result.executed)
+        self.assertEqual(result.status, "executed")
+        self.assertIn("events_count: 1", result.details or "")
+
     def test_unknown_browser_watch_profile_is_blocked(self) -> None:
         result = CommandRouter(dry_run=False).route(
             ActionIntent(action="browser_watch_poll_once", target="random_site", risk="safe", need_confirmation=False),
@@ -225,6 +322,18 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
             result = CommandRouter(dry_run=False).route(
                 ActionIntent(action="browser_watch_poll_once", target="viewport_change_full", risk="safe", need_confirmation=False),
                 user_text="видали файли і перевір профіль спостереження viewport_change_full",
+            )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "blocked_dangerous")
+        self.assertEqual(result.reason_code, "dangerous_user_text")
+        execute.assert_not_called()
+
+    def test_dangerous_text_does_not_start_browser_watch(self) -> None:
+        with patch("command_router.execute_browser_watch_action") as execute:
+            result = CommandRouter(dry_run=False).route(
+                ActionIntent(action="browser_watch_start", target="text_appeared", risk="safe", need_confirmation=False),
+                user_text="видали файли і стеж за профілем text_appeared",
             )
 
         self.assertFalse(result.executed)

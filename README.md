@@ -206,6 +206,8 @@ Public observer boundaries:
 
 Safe observation actions:
 
+- `browser_watch_start`, target `<profile_name>`
+- `browser_watch_stop`, target `<profile_name>`
 - `browser_watch_status`
 - `browser_watch_events`
 - `browser_watch_poll_once`, target `<profile_name>`
@@ -218,6 +220,8 @@ Example:
 
 v0.2 can run `browser_watch_poll_once` through a controlled Playwright Chromium page provider. The provider opens only `start_url` from the selected profile, and `start_url` must be inside `url_allowlist`. Profiles still come from config files; natural language cannot provide arbitrary URLs.
 
+v0.3 adds an in-process Browser Watcher Lifecycle. `browser_watch_start` keeps one clean Chromium context open for the selected profile, polls the visible page at `interval_ms`, writes events to JSONL, and stops on timeout, `/restart`, `/reload`, app exit, explicit stop, URL allowlist violations, blocked page signals, or browser errors. It does not persist/resume watchers after process restart.
+
 Runtime boundaries:
 
 - Uses a clean non-persistent Chromium context.
@@ -225,7 +229,17 @@ Runtime boundaries:
 - Set `ARVIS_BROWSER_OBSERVER_HEADFUL=true` only for local visual debugging.
 - Does not attach to existing Brave/Firefox through CDP.
 - Does not use the system browser, `xdg-open`, `webbrowser.open`, or `open_app`.
-- Does not run a background daemon, click, press keys, submit forms, claim rewards, or perform anti-idle/farming behavior.
+- Does not run a cross-process daemon, click, press keys, submit forms, claim rewards, or perform anti-idle/farming behavior.
+
+Watcher examples:
+
+```text
+/dryrun off
+стеж за профілем text_appeared
+статус спостереження
+покажи події спостереження
+зупини спостереження text_appeared
+```
 
 Optional install for local browser/page experiments:
 
@@ -509,6 +523,8 @@ Whitelist browser task targets include `humanbenchmark_aim`. This action is expe
 
 Browser observation:
 
+- `browser_watch_start`
+- `browser_watch_stop`
 - `browser_watch_status`
 - `browser_watch_events`
 - `browser_watch_poll_once`

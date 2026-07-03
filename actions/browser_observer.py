@@ -323,105 +323,20 @@ def list_watch_profiles(project_root: Path | str | None = None) -> list[str]:
     return sorted(names)
 
 
-def preview_browser_watch_action(action: str, target: str | None, project_root: Path | str | None = None) -> tuple[bool, str, str | None]:
+def load_watch_profile(target: str | None, project_root: Path | str | None = None) -> WatchProfile | None:
     root = Path(project_root or ".").resolve()
-    if action == "browser_watch_status":
-        return False, "Dry-run: would inspect browser observer status.", _observer_status_details(root)
-    if action == "browser_watch_events":
-        return False, "Dry-run: would read browser observer events.", f"events_path: {root / EVENT_LOG_PATH}"
-    if action == "browser_watch_poll_once":
-        profile = _load_named_profile(target, root)
-        if profile is None:
-            return False, "Browser watch profile is not in the whitelist.", f"target: {normalize_browser_watch_profile_name(target)}"
-        return False, f"Dry-run: would poll browser watch profile `{profile.name}` once.", _profile_details(profile)
-    return False, "Browser observer action is not supported.", f"action: {action}"
-
-
-def execute_browser_watch_action(
-    action: str,
-    target: str | None,
-    project_root: Path | str | None = None,
-    page: object | None = None,
-) -> tuple[bool, str, str | None]:
-    root = Path(project_root or ".").resolve()
-    observer = BrowserObserver(project_root=root)
-    if action == "browser_watch_status":
-        return True, "Browser observer status.", _observer_status_details(root)
-    if action == "browser_watch_events":
-        return True, "Browser observer events.", _events_details(root / EVENT_LOG_PATH)
-    if action == "browser_watch_poll_once":
-        profile = _load_named_profile(target, root)
-        if profile is None:
-            return False, "Browser watch profile is not in the whitelist.", f"target: {normalize_browser_watch_profile_name(target)}"
-        if page is None:
-            from actions.browser_observer_runtime import BrowserObserverRuntime
-
-            result = BrowserObserverRuntime(project_root=root).poll_once(profile)
-            if result.event is not None:
-                return _event_to_router_tuple(result.event)
-            if result.status == "no_event":
-                return False, "Browser observer found no event.", result.details
-            if result.status == "blocked":
-                return False, "Browser observer blocked.", result.details
-            if result.status == "not_configured":
-                return False, "Browser Observer is not configured.", result.details
-            if result.status == "error":
-                return False, "Browser observer error.", result.details
-            return False, result.message, result.details
-        event = observer.poll_once(profile, page)
-        if event is None:
-            return False, "Browser observer found no event.", f"profile: {profile.name}\nevent_type: no_event\n{SAFETY_NOTICE}"
-        observer.write_event(event)
-        return _event_to_router_tuple(event)
-    return False, "Browser observer action is not supported.", f"action: {action}"
-
-
-def _event_to_router_tuple(event: WatchEvent) -> tuple[bool, str, str | None]:
-    details = [
-        f"profile: {event.watch_id}",
-        f"event_type: {event.event_type}",
-        f"message: {event.message}",
-        f"timestamp: {event.timestamp}",
-        f"confidence: {event.confidence}" if event.confidence is not None else "confidence: ",
-        f"{SAFETY_NOTICE}",
-    ]
-    for key, value in sorted(event.metadata.items()):
-        details.append(f"{key}: {value}")
-    if event.event_type == "observer_blocked":
-        return False, "Browser observer blocked.", "\n".join(details)
-    if event.event_type == "observer_not_configured":
-        return False, "Browser Observer is not configured.", "\n".join(details)
-    if event.event_type == "observer_error":
-        return False, "Browser observer error.", "\n".join(details)
-    return True, "Browser observer event found.", "\n".join(details)
-
-
-def _load_named_profile(target: str | None, project_root: Path) -> WatchProfile | None:
     name = normalize_browser_watch_profile_name(target)
     if not name or not WATCH_PROFILE_NAME_RE.fullmatch(name):
         return None
-    observer = BrowserObserver(project_root=project_root)
-    for directory in (project_root / EXAMPLE_PROFILE_DIR, project_root / RUNTIME_PROFILE_DIR):
+    observer = BrowserObserver(project_root=root)
+    for directory in (root / EXAMPLE_PROFILE_DIR, root / RUNTIME_PROFILE_DIR):
         path = directory / f"{name}.json"
         if path.exists() and path.is_file():
             return observer.load_profile(path)
     return None
 
 
-def _observer_status_details(project_root: Path) -> str:
-    profiles = list_watch_profiles(project_root)
-    event_path = project_root / EVENT_LOG_PATH
-    return "\n".join(
-        [
-            f"profiles: {', '.join(profiles) if profiles else '(none)'}",
-            f"events_path: {event_path}",
-            f"events_count: {_event_count(event_path)}",
-            SAFETY_NOTICE,
-        ]
-    )
-
-
-def _profile_details(profile: WatchProfile) -> str:
+def format_watch_profile_details(profile: WatchProfile) -> str:
     return "\n".join(
         [
             f"profile: {profile.name}",
@@ -435,27 +350,43 @@ def _profile_details(profile: WatchProfile) -> str:
     )
 
 
-def _events_details(path: Path, limit: int = 5) -> str:
+def format_watch_event_details(event: WatchEvent) -> str:
+    details = [
+        f"profile: {event.watch_id}",
+        f"event_type: {event.event_type}",
+        f"message: {event.message}",
+        f"timestamp: {event.timestamp}",
+        f"confidence: {event.confidence}" if event.confidence is not None else "confidence: ",
+    ]
+    for key, value in sorted(event.metadata.items()):
+        details.append(f"{key}: {value}")
+    return "\n".join(details)
+
+
+def read_event_log_details(path: Path, limit: int = 5, profile: str | None = None) -> str:
     if not path.exists():
-        return f"events_count: 0\nlast_events: \n{SAFETY_NOTICE}"
+        return "events_count: 0\nlast_events: "
     lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     last_events: list[str] = []
+    visible_count = 0
     for line in lines[-limit:]:
         try:
             payload = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if profile and payload.get("watch_id") != profile and payload.get("metadata", {}).get("profile") != profile:
+            continue
+        visible_count += 1
         last_events.append(f"{payload.get('timestamp', '')} {payload.get('watch_id', '')} {payload.get('event_type', '')}".strip())
     return "\n".join(
         [
-            f"events_count: {len(lines)}",
+            f"events_count: {visible_count if profile else len(lines)}",
             f"last_events: {' | '.join(last_events)}",
-            SAFETY_NOTICE,
         ]
     )
 
 
-def _event_count(path: Path) -> int:
+def event_count(path: Path) -> int:
     if not path.exists():
         return 0
     return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
