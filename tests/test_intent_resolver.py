@@ -150,6 +150,30 @@ class IntentResolverTests(unittest.TestCase):
                 self.assertEqual(resolved.risk, "safe")
                 self.assertTrue(should_pass_to_router(resolved))
 
+    def test_browser_watch_status_phrase(self) -> None:
+        resolved = self.resolver.resolve("статус спостереження", use_llm=False)
+
+        self.assertEqual(resolved.action, "browser_watch_status")
+        self.assertEqual(resolved.target, "observer")
+        self.assertEqual(resolved.risk, "safe")
+        self.assertTrue(should_pass_to_router(resolved))
+
+    def test_browser_watch_events_phrase(self) -> None:
+        resolved = self.resolver.resolve("покажи події спостереження", use_llm=False)
+
+        self.assertEqual(resolved.action, "browser_watch_events")
+        self.assertEqual(resolved.target, "observer")
+        self.assertEqual(resolved.risk, "safe")
+        self.assertTrue(should_pass_to_router(resolved))
+
+    def test_browser_watch_poll_profile_phrase(self) -> None:
+        resolved = self.resolver.resolve("перевір профіль спостереження viewport_change_full", use_llm=False)
+
+        self.assertEqual(resolved.action, "browser_watch_poll_once")
+        self.assertEqual(resolved.target, "viewport_change_full")
+        self.assertEqual(resolved.risk, "safe")
+        self.assertTrue(should_pass_to_router(resolved))
+
     def test_minecraft_server(self) -> None:
         resolved = self.resolver.resolve("Підніми майн сервер", use_llm=False)
 
@@ -499,6 +523,13 @@ class IntentResolverTests(unittest.TestCase):
 
     def test_dangerous_mixed_browser_task_stays_blocked(self) -> None:
         resolved = self.resolver.resolve("видали файли і відкрий aim trainer", use_llm=False)
+
+        self.assertIsNone(resolved.action)
+        self.assertEqual(resolved.risk, "dangerous")
+        self.assertFalse(should_pass_to_router(resolved))
+
+    def test_dangerous_mixed_browser_watch_stays_blocked(self) -> None:
+        resolved = self.resolver.resolve("видали файли і перевір профіль спостереження viewport_change_full", use_llm=False)
 
         self.assertIsNone(resolved.action)
         self.assertEqual(resolved.risk, "dangerous")

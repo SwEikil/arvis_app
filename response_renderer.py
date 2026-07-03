@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from actions.apps import APP_WHITELIST
 from actions.browser_agent import BROWSER_TASKS
+from actions.browser_observer import SAFETY_NOTICE
 from command_router import CommandResult
 from intent_resolver import ResolvedIntent
 
@@ -37,6 +38,8 @@ def render_final_response(
     if status == "not_configured":
         if action == "browser_task_run":
             return "Browser Agent треба спершу налаштувати: встанови playwright/opencv-python/numpy, сер."
+        if action.startswith("browser_watch_"):
+            return f"Browser Observer ще не має підключеної browser page для poll-once, сер. {SAFETY_NOTICE}"
         return f"Цю дію треба спершу налаштувати, сер: {reason_code or command_result.message}."
 
     if status == "unknown_action":
@@ -45,6 +48,8 @@ def render_final_response(
     if status == "blocked":
         if action == "browser_task_run":
             return "Browser task зупинено, сер: сторінка вийшла за межі дозволеного сценарію."
+        if action.startswith("browser_watch_"):
+            return f"Observer заблоковано allowlist профілю, сер. Подію не зберігав. {SAFETY_NOTICE}"
         return "Дію зупинено, сер."
 
     if status == "unknown_target":
@@ -52,6 +57,8 @@ def render_final_response(
         if action == "browser_task_run":
             available_tasks = ", ".join(sorted(BROWSER_TASKS))
             return f"Browser task не в whitelist, сер: {target}. Доступні: {available_tasks}."
+        if action == "browser_watch_poll_once":
+            return f"Не знаю такого профілю спостереження, сер: {target}. Профілі беруться тільки з config files."
         available = ", ".join(sorted(APP_WHITELIST))
         return (
             f"Ціль не в whitelist, сер: {target}. Доступні: {available}. "
@@ -62,6 +69,8 @@ def render_final_response(
         return "Не до кінця зрозумів дію, сер. Нічого не виконував."
 
     if status == "command_failed":
+        if action.startswith("browser_watch_"):
+            return f"Browser Observer повернув помилку, сер: {reason_code or command_result.message}. {SAFETY_NOTICE}"
         if action == "media_status":
             return "Не знайшов активний media player, сер."
         if action == "volume_status":
@@ -75,6 +84,9 @@ def render_final_response(
         generic_response = _render_generic_executed(action, command_result)
         if generic_response is not None:
             return generic_response
+
+    if status == "no_event" and action.startswith("browser_watch_"):
+        return f"Події не знайшов, сер. {SAFETY_NOTICE}"
 
     return command_result.message
 
@@ -179,6 +191,8 @@ def _render_generic_executed(action: str, result: CommandResult) -> str | None:
         return f"Запустив {_display_target(target)}, сер."
     if action == "browser_task_run":
         return _render_browser_task_executed(result)
+    if action.startswith("browser_watch_"):
+        return _render_browser_watch_executed(action, result)
     return None
 
 
@@ -189,6 +203,12 @@ def _render_dry_run(action: str, result: CommandResult) -> str:
         return f"Dry-run, сер: я б запустив {_display_target(target)}, але реальна команда не виконувалась."
     if action == "browser_task_run":
         return f"Dry-run, сер: я б запустив browser task {_display_browser_task(target)}, але реальна дія не виконувалась."
+    if action == "browser_watch_poll_once":
+        return f"Dry-run, сер: я б один раз перевірив профіль спостереження {target}. {SAFETY_NOTICE}"
+    if action == "browser_watch_status":
+        return f"Dry-run, сер: я б перевірив статус Browser Observer. {SAFETY_NOTICE}"
+    if action == "browser_watch_events":
+        return f"Dry-run, сер: я б прочитав останні Browser Observer events. {SAFETY_NOTICE}"
     if action == "volume_up":
         return f"Dry-run, сер: я б збільшив гучність на {params.get('step_percent', 5)}%, але реальна команда не виконувалась."
     if action == "volume_down":
@@ -266,6 +286,25 @@ def _render_browser_task_executed(result: CommandResult) -> str:
         f"{max_targets} попадань. Спроб: {attempted_clicks}, підтверджено: {confirmed_hits}, час: {elapsed_text} секунд."
         f"{_browser_stop_reason_suffix(details)}"
     )
+
+
+def _render_browser_watch_executed(action: str, result: CommandResult) -> str:
+    details = _parse_details(result.details)
+    if action == "browser_watch_status":
+        profiles = details.get("profiles") or "(none)"
+        events_count = details.get("events_count") or "0"
+        return f"Browser Observer активний, сер. Профілі: {profiles}. Events: {events_count}. {SAFETY_NOTICE}"
+    if action == "browser_watch_events":
+        events_count = details.get("events_count") or "0"
+        last_events = details.get("last_events") or ""
+        if last_events:
+            return f"Показую Browser Observer events, сер. Всього: {events_count}. Останні: {last_events}. {SAFETY_NOTICE}"
+        return f"Browser Observer events поки порожні, сер. {SAFETY_NOTICE}"
+    if action == "browser_watch_poll_once":
+        event_type = details.get("event_type") or "event"
+        message = details.get("message") or result.message
+        return f"Знайшов подію спостереження, сер: {event_type}. {message}. {SAFETY_NOTICE}"
+    return result.message
 
 
 def _clean_browser_site_result(value: str | None) -> str:

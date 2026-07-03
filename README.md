@@ -191,6 +191,34 @@ ARVIS_BROWSER_DEBUG_SAVE=true
 
 Debug files are written under `.runtime/browser_debug/`.
 
+### Browser Observation Core
+
+Browser Observation Core is the public-safe observer path. It observes only: visible browser viewport, DOM/text signals from a provided Playwright-like page, structured events, JSONL logs, and user-facing notifications. Private local extensions may subscribe to those events, but hands/actions stay outside the public repo.
+
+Public observer boundaries:
+
+- No generic auto-click, keypress, reward claiming, anti-idle, farming, CAPTCHA/login/payment/download bypass, arbitrary URL automation, or full desktop control.
+- Events are written to `.runtime/browser_observer/events.jsonl`.
+- Debug screenshots, when a profile enables them, stay under `.runtime/browser_observer/screenshots/`.
+- It watches the visible browser viewport, not the full desktop.
+- Optional regions are viewport-relative. Use `{"type": "full"}` or an anchor percent region with `top_left`, `top_right`, `bottom_left`, `bottom_right`, or `center`.
+- Profiles come from config files such as `examples/watch_profiles/`; natural language does not create arbitrary profiles or URLs.
+
+Safe observation actions:
+
+- `browser_watch_status`
+- `browser_watch_events`
+- `browser_watch_poll_once`, target `<profile_name>`
+
+v0.1 does not start a browser, attach over CDP, run a background daemon, click, or press keys. Router dry-run/status/events are available; real poll execution needs a future caller to inject a Playwright-like page and otherwise returns `not_configured`.
+
+Optional install for local browser/page experiments:
+
+```bash
+.venv/bin/python -m pip install playwright numpy opencv-python
+.venv/bin/python -m playwright install chromium
+```
+
 Recommended first test:
 
 ```text
@@ -462,6 +490,14 @@ Browser tasks:
 - `browser_task_run`
 
 Whitelist browser task targets include `humanbenchmark_aim`. This action is experimental and requires optional Playwright/OpenCV setup.
+
+Browser observation:
+
+- `browser_watch_status`
+- `browser_watch_events`
+- `browser_watch_poll_once`
+
+Observer profile targets are config-backed, for example `viewport_change_full` and `text_appeared`.
 
 Minecraft:
 

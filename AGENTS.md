@@ -135,10 +135,11 @@ Important files and responsibilities:
 - `config.py` - local configuration from environment/defaults.
 - `actions/` - desktop, media, volume, Minecraft, app/site launch, and whitelisted browser action implementations.
 - `actions/browser_agent.py` - narrow experimental controlled-browser tasks. Do not turn this into a generic public auto-clicker.
+- `actions/browser_observer.py` - public-safe browser observation core. It is eyes/events only; private ignored extensions are hands/actions.
 - `voice_config.py`, `voice_input.py`, `voice_ducking.py`, `voice_text_normalizer.py` - optional voice pipeline.
 - `tests/` - unittest-based coverage.
 
-If a future `actions/browser_observer.py` or similar module is added, it should be observation-first: detect and emit events, not perform generic actions.
+Browser observer modules should be observation-first: detect and emit events, not perform generic actions.
 
 ## MCP context servant workflow
 
@@ -204,6 +205,11 @@ For browser task modules:
 For generic browser observation modules:
 
 - Only observe, detect, log, and notify.
+- Public observer = eyes/events, private extension = hands/actions.
+- Watch the visible browser viewport first, not a fixed desktop pixel region.
+- Fixed regions are optional optimizations only.
+- Regions must be relative to the browser viewport, not absolute monitor or desktop pixels.
+- Supported viewport regions are `{"type": "full"}` or anchor-based percent regions with `anchor` set to `top_left`, `top_right`, `bottom_left`, `bottom_right`, or `center`, plus `width_percent`, `height_percent`, `offset_percent_x`, and `offset_percent_y`.
 - Emit structured events that private local extensions may consume.
 - Never call `mouse.click`, `keyboard.press`, form submit, or equivalent action APIs.
 - Require profile/config allowlists for URLs and local template paths.

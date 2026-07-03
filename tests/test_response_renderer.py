@@ -123,6 +123,63 @@ class ResponseRendererTests(unittest.TestCase):
             "Dry-run, сер: я б запустив browser task HumanBenchmark Aim, але реальна дія не виконувалась.",
         )
 
+    def test_browser_watch_poll_dry_run_response_includes_notice(self) -> None:
+        result = self._result(
+            action="browser_watch_poll_once",
+            status="dry_run",
+            reason_code=None,
+            message="dry-run",
+            normalized_target="viewport_change_full",
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("Dry-run", rendered)
+        self.assertIn("viewport_change_full", rendered)
+        self.assertIn("Generic кліки/натискання", rendered)
+
+    def test_browser_watch_event_found_response(self) -> None:
+        result = self._result(
+            action="browser_watch_poll_once",
+            status="executed",
+            reason_code=None,
+            message="Browser observer event found.",
+            executed=True,
+            details="event_type: text_appeared\nmessage: Text appeared: Example Domain",
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("Знайшов подію спостереження", rendered)
+        self.assertIn("text_appeared", rendered)
+        self.assertIn("Generic кліки/натискання", rendered)
+
+    def test_browser_watch_no_event_response(self) -> None:
+        result = self._result(
+            action="browser_watch_poll_once",
+            status="no_event",
+            reason_code=None,
+            message="Browser observer found no event.",
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("Події не знайшов", rendered)
+        self.assertIn("Generic кліки/натискання", rendered)
+
+    def test_browser_watch_not_configured_response(self) -> None:
+        result = self._result(
+            action="browser_watch_poll_once",
+            status="not_configured",
+            reason_code="browser_observer_not_configured",
+            message="page provider missing",
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("page", rendered)
+        self.assertIn("Generic кліки/натискання", rendered)
+
     def test_browser_task_executed_response(self) -> None:
         result = self._result(
             action="browser_task_run",

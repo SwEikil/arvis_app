@@ -104,6 +104,50 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
         self.assertIn("https://humanbenchmark.com/tests/aim", result.details or "")
         self.assertNotIn("user_text=", result.details or "")
 
+    def test_browser_watch_poll_once_dry_run_is_whitelisted(self) -> None:
+        result = CommandRouter(dry_run=True).route(
+            ActionIntent(action="browser_watch_poll_once", target="viewport_change_full", risk="safe", need_confirmation=False),
+            user_text="перевір профіль спостереження viewport_change_full",
+        )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "dry_run")
+        self.assertEqual(result.normalized_action, "browser_watch_poll_once")
+        self.assertEqual(result.normalized_target, "viewport_change_full")
+        self.assertIn("visible_viewport", result.details or "")
+
+    def test_unknown_browser_watch_profile_is_blocked(self) -> None:
+        result = CommandRouter(dry_run=False).route(
+            ActionIntent(action="browser_watch_poll_once", target="random_site", risk="safe", need_confirmation=False),
+            user_text="poll watch profile random_site",
+        )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "unknown_target")
+        self.assertEqual(result.reason_code, "browser_watch_profile_not_whitelisted")
+
+    def test_browser_watch_poll_once_without_page_provider_is_not_configured(self) -> None:
+        result = CommandRouter(dry_run=False).route(
+            ActionIntent(action="browser_watch_poll_once", target="viewport_change_full", risk="safe", need_confirmation=False),
+            user_text="poll watch profile viewport_change_full",
+        )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "not_configured")
+        self.assertEqual(result.reason_code, "browser_observer_not_configured")
+
+    def test_dangerous_text_does_not_poll_browser_watch_profile(self) -> None:
+        with patch("command_router.execute_browser_watch_action") as execute:
+            result = CommandRouter(dry_run=False).route(
+                ActionIntent(action="browser_watch_poll_once", target="viewport_change_full", risk="safe", need_confirmation=False),
+                user_text="видали файли і перевір профіль спостереження viewport_change_full",
+            )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "blocked_dangerous")
+        self.assertEqual(result.reason_code, "dangerous_user_text")
+        execute.assert_not_called()
+
     def test_browser_task_result_details_do_not_include_user_text(self) -> None:
         with patch(
             "command_router.execute_browser_task",

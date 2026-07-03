@@ -48,6 +48,9 @@ ALLOWED_ACTIONS = {
     "open_app",
     "launch_app",
     "browser_task_run",
+    "browser_watch_status",
+    "browser_watch_events",
+    "browser_watch_poll_once",
     "start_minecraft_server",
 }
 
@@ -74,6 +77,10 @@ ALLOWED_TARGETS = {
     "discord",
     "telegram",
     "humanbenchmark_aim",
+    "observer",
+    "viewport_change_full",
+    "text_appeared",
+    "text_appeared_example",
     "minecraft_server",
     "default",
 }
@@ -85,6 +92,9 @@ COMMAND_HINTS = {
     "прибери",
     "прибав",
     "відкрий",
+    "перевір",
+    "покажи",
+    "статус",
     "запусти",
     "зупини",
     "стопни",
@@ -750,6 +760,10 @@ def resolve_with_heuristics(
     if browser_task is not None:
         return _with_voice_correction(browser_task, correction)
 
+    browser_watch = _resolve_browser_watch(text)
+    if browser_watch is not None:
+        return _with_voice_correction(browser_watch, correction)
+
     negative_next = _resolve_negative_next(text)
     if negative_next is not None:
         return _with_voice_correction(negative_next, correction)
@@ -1191,6 +1205,47 @@ def _resolve_browser_task(text: str) -> ResolvedIntent | None:
     return None
 
 
+def _resolve_browser_watch(text: str) -> ResolvedIntent | None:
+    if _contains_any(text, {"статус спостереження", "browser watch status", "watch status"}):
+        return ResolvedIntent(
+            action="browser_watch_status",
+            target="observer",
+            risk="safe",
+            need_confirmation=False,
+            confidence=0.9,
+            source="heuristic_user_text",
+            reason="User text asks for browser observer status.",
+            matched="browser_watch_status",
+        )
+
+    if _contains_any(text, {"покажи події спостереження", "show watch events", "browser watch events"}):
+        return ResolvedIntent(
+            action="browser_watch_events",
+            target="observer",
+            risk="safe",
+            need_confirmation=False,
+            confidence=0.9,
+            source="heuristic_user_text",
+            reason="User text asks for browser observer events.",
+            matched="browser_watch_events",
+        )
+
+    match = re.search(r"(?:перевір профіль спостереження|poll watch profile)\s+([a-z0-9_-]+(?:\s+[a-z0-9_-]+)*)", text)
+    if match:
+        profile_name = "_".join(match.group(1).split())
+        return ResolvedIntent(
+            action="browser_watch_poll_once",
+            target=profile_name,
+            risk="safe",
+            need_confirmation=False,
+            confidence=0.9,
+            source="heuristic_user_text",
+            reason="User text asks to poll a configured browser observer profile once.",
+            matched="browser_watch_poll_once",
+        )
+    return None
+
+
 def _resolve_minecraft(text: str) -> ResolvedIntent | None:
     for action, phrases in MINECRAFT_PHRASES:
         if _contains_any(text, phrases):
@@ -1305,6 +1360,7 @@ def _build_llm_prompt(user_text: str, command_history: list[dict[str, object]]) 
         "Never return raw shell commands. Only use allowed actions.\n"
         "Use open_app only for whitelist apps/sites, never for arbitrary URLs.\n"
         "Use browser_task_run only for whitelist browser tasks such as humanbenchmark_aim; never for arbitrary URLs.\n"
+        "Use browser_watch_* only for configured observer profiles; never create arbitrary profiles or URLs from natural language.\n"
         "For Minecraft server phrases, use the local Minecraft Server Manager actions and do not ask for IP/domain.\n"
         f"Allowed actions: {sorted(ALLOWED_ACTIONS)}\n"
         "Optional params: step_percent for volume_up/volume_down, level_percent for volume_set, seconds for media_seek_forward/media_seek_backward.\n"

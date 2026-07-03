@@ -1,0 +1,10 @@
+{
+  "name": "text_appeared_example",
+  "mode": "text_appeared",
+  "url_allowlist": ["https://example.com/"],
+  "text": "Example Domain",
+  "interval_ms": 1000,
+  "timeout_seconds": 300,
+  "debug_save": false,
+  "notify": true
+}

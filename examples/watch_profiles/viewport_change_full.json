@@ -1,0 +1,11 @@
+{
+  "name": "viewport_change_full",
+  "mode": "viewport_change",
+  "url_allowlist": ["https://example.com/"],
+  "area": "visible_viewport",
+  "region": {"type": "full"},
+  "interval_ms": 500,
+  "timeout_seconds": 300,
+  "debug_save": true,
+  "notify": true
+}

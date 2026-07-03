@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from actions.apps import execute_app_action, normalize_target, preview_app_action
 from actions.browser_agent import execute_browser_task, preview_browser_task
 from actions.browser_agent import normalize_browser_task_target
+from actions.browser_observer import execute_browser_watch_action
+from actions.browser_observer import normalize_browser_watch_profile_name
+from actions.browser_observer import preview_browser_watch_action
 from actions.media import execute_media_action, preview_media_action
 from actions.minecraft_server import MINECRAFT_ACTIONS
 from actions.minecraft_server import execute_minecraft_server_action
@@ -148,6 +151,18 @@ class CommandRouter:
                 lambda: preview_browser_task(target),
             )
 
+        if action in BROWSER_WATCH_ACTIONS:
+            return self._run_or_preview(
+                action,
+                target,
+                intent,
+                user_text,
+                params,
+                None,
+                lambda: execute_browser_watch_action(action, target),
+                lambda: preview_browser_watch_action(action, target),
+            )
+
         if _normalize_action_name(intent.action) in GENERIC_VOLUME_ACTIONS:
             return CommandResult(
                 executed=False,
@@ -283,12 +298,21 @@ BROWSER_ACTIONS = {
     "browser_task_run",
 }
 
+BROWSER_WATCH_ACTIONS = {
+    "browser_watch_status",
+    "browser_watch_events",
+    "browser_watch_poll_once",
+}
+
 BROWSER_ACTION_ALIASES = {
     "browser_task_run": "browser_task_run",
     "launch_game_module": "browser_task_run",
     "run_game_module": "browser_task_run",
     "start_game_module": "browser_task_run",
     "open_game_module": "browser_task_run",
+    "browser_watch_status": "browser_watch_status",
+    "browser_watch_events": "browser_watch_events",
+    "browser_watch_poll_once": "browser_watch_poll_once",
 }
 
 GENERIC_VOLUME_ACTIONS = {
@@ -645,6 +669,8 @@ def normalize_action(
     resolved_action = ACTION_ALIASES.get(normalized_action, normalized_action)
     if resolved_action in BROWSER_ACTIONS:
         return resolved_action, normalize_browser_task_target(target)
+    if resolved_action in BROWSER_WATCH_ACTIONS:
+        return resolved_action, normalize_browser_watch_profile_name(target)
 
     return resolved_action, normalized_target
 
@@ -778,6 +804,21 @@ def _classify_outcome(
 
     if action in BROWSER_ACTIONS and "blocked" in message_text:
         return "blocked", "browser_task_blocked", False
+
+    if action in BROWSER_WATCH_ACTIONS and "not in the whitelist" in message_text:
+        return "unknown_target", "browser_watch_profile_not_whitelisted", False
+
+    if action in BROWSER_WATCH_ACTIONS and "not configured" in message_text:
+        return "not_configured", "browser_observer_not_configured", False
+
+    if action in BROWSER_WATCH_ACTIONS and "blocked" in message_text:
+        return "blocked", "browser_observer_blocked", False
+
+    if action in BROWSER_WATCH_ACTIONS and "error" in message_text:
+        return "command_failed", "browser_observer_error", False
+
+    if action in BROWSER_WATCH_ACTIONS and "no event" in message_text:
+        return "no_event", None, False
 
     if "not supported" in message_text:
         return "unsupported", "action_not_implemented", False
