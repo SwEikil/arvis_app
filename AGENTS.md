@@ -23,8 +23,57 @@ Current implemented features:
 - Self reload/restart through `/reload` and `/restart` using `.runtime/reload_state.json`.
 - Optional voice command layer v0.1 with explicit one-shot microphone input.
 - Local desktop actions for media, volume, app launch, and Minecraft server management.
+- Whitelisted website launch targets such as YouTube, Google, GitHub, and ChatGPT.
+- Experimental controlled-browser task support for explicit whitelisted tasks such as HumanBenchmark Aim.
 
 The project language in code identifiers is English. User-facing REPL text is mostly Ukrainian with the existing informal Arvis tone. Do not rewrite the app into formal corporate language.
+
+## Public vs private extension boundary
+
+This repository is public/open and may be used by other people. Keep public features broadly useful, conservative, and safe by default.
+
+Public `arvis_app` may include:
+
+- Observation and diagnostics.
+- Structured events.
+- Logs and local notifications.
+- Safe previews and dry-runs.
+- Whitelisted, explicit, testable actions.
+- Controlled browser sessions for limited, named, reviewed tasks.
+
+Public `arvis_app` must not include generic automation that can silently play games, farm rewards, bypass anti-bot systems, or operate a user's machine without a narrow whitelist.
+
+Private/local-only behavior belongs outside the public repository. If the user wants local personal automation, implement it as an ignored local extension that subscribes to public observation events. Do not commit it.
+
+Recommended split:
+
+```text
+public arvis_app:
+  observe -> detect -> emit structured event -> log/notify
+
+private local extension:
+  subscribe to event -> decide local action -> click/keypress/custom automation
+```
+
+Allowed public observer behavior:
+
+- Watch DOM selectors or text.
+- Watch browser page regions.
+- Detect region changes, template matches, color changes, URL/title changes, console/network signals.
+- Save debug screenshots under `.runtime/`.
+- Emit JSONL events for local subscribers.
+- Notify the user that something was detected.
+
+Not allowed in generic public observer modules:
+
+- Generic auto-clicking.
+- Generic keypress/mouse movement.
+- Generic reward claiming, anti-idle, farming, or gameplay automation.
+- CAPTCHA/login/payment/download bypass.
+- Arbitrary URL automation.
+- Full-desktop control that bypasses `CommandRouter` and whitelists.
+
+Explicit whitelisted demo tasks, such as HumanBenchmark Aim, may exist only as narrow experimental modules with strong tests, visible debug output, hard limits, and no generalized reuse as a botting framework.
 
 ## Runtime and commands
 
@@ -54,7 +103,7 @@ A useful compile check:
 find . -name '*.py' -not -path './.venv/*' -print0 | xargs -0 .venv/bin/python -m py_compile
 ```
 
-Do not require Ollama, audio devices, Flatpak apps, Spotify, Brave, or a Minecraft server to be running for normal unit tests. Tests should mock those boundaries.
+Do not require Ollama, audio devices, Flatpak apps, Spotify, Brave, Playwright, OpenCV, a real browser, or a Minecraft server to be running for normal unit tests. Tests should mock those boundaries.
 
 ## Dependencies
 
@@ -66,6 +115,8 @@ Runtime dependencies are intentionally small:
 - `python-dotenv`
 
 Optional voice/STT dependencies must be imported lazily and only when a voice command needs them. Text mode must still work if voice dependencies are missing.
+
+Optional browser-vision/observer dependencies must also be imported lazily. Text mode, Doctor Mode, and unrelated actions must still work if Playwright, OpenCV, or NumPy are missing.
 
 ## Architecture map
 
@@ -80,9 +131,12 @@ Important files and responsibilities:
 - `runtime_state.py` - safe save/load/delete of reload state.
 - `doctor.py` - local health checks, JSON/text reports, redaction, and safe `--fix` behavior.
 - `config.py` - local configuration from environment/defaults.
-- `actions/` - desktop, media, volume, and Minecraft action implementations.
+- `actions/` - desktop, media, volume, Minecraft, app/site launch, and whitelisted browser action implementations.
+- `actions/browser_agent.py` - narrow experimental controlled-browser tasks. Do not turn this into a generic public auto-clicker.
 - `voice_config.py`, `voice_input.py`, `voice_ducking.py`, `voice_text_normalizer.py` - optional voice pipeline.
 - `tests/` - unittest-based coverage.
+
+If a future `actions/browser_observer.py` or similar module is added, it should be observation-first: detect and emit events, not perform generic actions.
 
 ## Core safety rules
 
@@ -93,17 +147,66 @@ Hard rules:
 - Keep `CommandRouter(dry_run=True)` as the default.
 - Keep action execution behind `CommandRouter`.
 - Keep `IntentResolver` separate from the router. It can only return a candidate intent.
-- Keep apps, action names, and Minecraft targets whitelisted.
+- Keep apps, action names, website targets, browser tasks, observer profiles, and Minecraft targets whitelisted.
 - Keep risky or ambiguous inputs as safe no-ops or clarifications.
 - Do not add broad computer-control paths that bypass the existing router/whitelist design.
 - Do not fake confirmation support. If a flow needs confirmation, implement and test a real confirmation path first.
 - Keep command previews available for dry-run.
 - Keep local machine-specific behavior in `.env`, not in tracked code.
-- Keep `.env.example` limited to placeholders.
-- Do not commit local runtime files, logs, caches, model files, or private config.
+- Keep `.env.example` limited to placeholders and safe examples.
+- Do not commit local runtime files, logs, caches, screenshots, model files, or private config.
 - Preserve secret/path redaction in Doctor Mode.
 - Keep voice mode explicit and manual; do not add background recording.
 - Keep user-facing REPL text close to the existing Ukrainian informal Arvis style.
+
+## Browser automation and observation rules
+
+Browser control is safety-sensitive. Treat it like desktop control.
+
+Public browser features should prefer this order:
+
+1. Dry-run preview.
+2. Observation-only event detection.
+3. Narrow, explicit, whitelisted controlled-browser tasks.
+4. Private ignored local extensions for personal actions.
+
+Do not use `xdg-open`, `webbrowser.open`, raw shell, or the user's normal browser profile for controlled browser tasks. Use a clean Playwright-controlled context when execution is explicitly needed.
+
+For browser task modules:
+
+- Use whitelisted targets only.
+- Do not accept arbitrary URLs from natural language.
+- Do not share persistent user profiles unless there is a reviewed reason.
+- Do not enable DevTools by default.
+- Do not interact with login, CAPTCHA, payment, purchase, download, or permission prompts.
+- Add hard limits for attempts, runtime, repeated failures, unexpected windows, and browser state errors.
+- Confirm outcomes. Do not claim success from click attempts alone.
+- Abort on unstable browser state rather than continuing to click.
+- Keep debug screenshots and event logs under `.runtime/` and ignored by git.
+
+For generic browser observation modules:
+
+- Only observe, detect, log, and notify.
+- Emit structured events that private local extensions may consume.
+- Never call `mouse.click`, `keyboard.press`, form submit, or equivalent action APIs.
+- Require profile/config allowlists for URLs and local template paths.
+- Support user-customizable profiles instead of hardcoded game-specific names like `reward_card`.
+- Use generic names such as `visual_region`, `template_match`, `text_appeared`, or `dom_selector_appeared`.
+
+## Local private extensions
+
+Private extensions are allowed for the user's own machine, but they do not belong in the public repository.
+
+If local personal automation is needed:
+
+- Put it under an ignored directory, for example `.local_extensions/` or `.runtime/local_extensions/`.
+- Add or preserve `.gitignore` rules so it cannot be committed accidentally.
+- Make it subscribe to public observer events instead of mixing private actions into public modules.
+- Keep private actions disabled by default.
+- Do not document private action recipes as public features.
+- Do not require private extensions for tests.
+
+Agents must not implement local-only click/keypress/gameplay automation directly in tracked files unless the user explicitly asks for a private ignored extension and the implementation remains outside the public code path.
 
 ## Configuration rules
 
@@ -111,9 +214,10 @@ Important env areas:
 
 - Ollama: `OLLAMA_HOST`, `ARVIS_MODEL`
 - local user/app paths: `USER_NAME`, `MUSIC_FOLDER`, `DOWNLOADS_FOLDER`
-- app launch commands: `STEAM_COMMAND`, `SPOTIFY_COMMAND`, `BRAVE_COMMAND`, `DISCORD_COMMAND`, `TELEGRAM_COMMAND`
+- app launch commands: `STEAM_COMMAND`, `SPOTIFY_COMMAND`, `BRAVE_COMMAND`, `DISCORD_COMMAND`, `TELEGRAM_COMMAND`, website command overrides
 - voice: `ARVIS_VOICE_*`, `ARVIS_STT_*`, `ARVIS_MIC_DEVICE`
 - Minecraft server: `MINECRAFT_SERVER_*`
+- browser debug: browser/observer debug-save flags, if implemented
 
 When adding an env key, update all relevant places together:
 
@@ -130,12 +234,14 @@ The intended flow is:
 1. User text enters `main.py`.
 2. Ollama returns assistant text and optionally structured intent blocks.
 3. `intent_parser.py` parses the response.
-4. `CommandRouter` tries parsed `ACTION_INTENT` if present.
+4. A parsed `ACTION_INTENT` may be considered, but stale/raw intents must not be executed when the deterministic resolver has a safer final match.
 5. `IntentResolver` may repair or infer a safe candidate only when needed.
-6. `CommandRouter` is still the final gate.
+6. `CommandRouter` is always the final gate.
 7. `response_renderer.py` renders the final user-facing result.
 
 Do not collapse these layers into one large function. The separation is what keeps the app testable and safe.
+
+For one user command, normal debug output should show one final routed intent and one final router result. If a full trace is needed, put it behind an explicit trace/debug mode rather than confusing normal output with stale preliminary router attempts.
 
 When adding a new action:
 
@@ -196,7 +302,7 @@ Keep these properties:
 - missing `.env` should be info, not fail
 - `--strict` should make warnings produce non-zero exit
 - `--fix` must remain safe and limited
-- checks should be mockable and not require real desktop/audio/Ollama/Minecraft state
+- checks should be mockable and not require real desktop/audio/Ollama/Minecraft/browser state
 
 ## Testing expectations
 
@@ -214,7 +320,7 @@ For syntax/import confidence, also run a compile check when practical:
 find . -name '*.py' -not -path './.venv/*' -print0 | xargs -0 .venv/bin/python -m py_compile
 ```
 
-Add tests for every behavior change. Mock external commands, subprocesses, Ollama HTTP calls, audio devices, `playerctl`, `wpctl`, `tmux`, Flatpak apps, and filesystem edge cases.
+Add tests for every behavior change. Mock external commands, subprocesses, Ollama HTTP calls, audio devices, `playerctl`, `wpctl`, `tmux`, Flatpak apps, Playwright/browser pages, OpenCV/NumPy boundaries, and filesystem edge cases.
 
 ## Code style
 
@@ -237,9 +343,12 @@ Update README when you change:
 - Doctor output/flags
 - voice behavior
 - action names or safety behavior
+- browser task/observer behavior
 - Minecraft server setup/behavior
 
 Keep examples safe and local-only. Use placeholders, never real secrets or personal local paths.
+
+When documenting observer-style browser features, describe them as observation/event modules. Do not present them as generic game bots or auto-clickers.
 
 ## Current development direction
 
@@ -251,5 +360,7 @@ Good next-step features usually look like this:
 - more tests around ambiguous and unsafe inputs
 - improved Doctor diagnostics
 - safer action previews
+- public browser observation core that emits events without generic actions
+- private ignored local extension hooks for user-specific automation
 - richer but local-only runtime state
 - better voice normalization without background listening
