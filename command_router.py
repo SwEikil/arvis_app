@@ -9,6 +9,7 @@ from actions.browser_agent import normalize_browser_task_target
 from actions.browser_observer import normalize_browser_watch_profile_name
 from actions.browser_watch_manager import execute_browser_watch_action
 from actions.browser_watch_manager import preview_browser_watch_action
+from actions.browser_watch_manager import read_browser_watch_action
 from actions.media import execute_media_action, preview_media_action
 from actions.minecraft_server import MINECRAFT_ACTIONS
 from actions.minecraft_server import execute_minecraft_server_action
@@ -34,6 +35,7 @@ class CommandResult:
     normalized_target: str | None = None
     original_user_text: str | None = None
     params: dict[str, object] | None = None
+    data: dict[str, object] | None = None
 
 
 class CommandRouter:
@@ -152,6 +154,8 @@ class CommandRouter:
             )
 
         if action in BROWSER_WATCH_ACTIONS:
+            if action in READ_ONLY_BROWSER_WATCH_ACTIONS:
+                return self._run_browser_watch_read_only(action, target, intent, user_text, params)
             return self._run_or_preview(
                 action,
                 target,
@@ -196,6 +200,32 @@ class CommandRouter:
             normalized_target=target,
             original_user_text=user_text,
             params=params,
+        )
+
+    def _run_browser_watch_read_only(
+        self,
+        action: str,
+        target: str | None,
+        intent: ActionIntent,
+        user_text: str | None,
+        params: dict[str, object],
+    ) -> CommandResult:
+        result = read_browser_watch_action(action, target, params)
+        status = "executed" if result.executed else result.status
+        return CommandResult(
+            executed=result.executed,
+            action=action,
+            status=status,
+            message=result.message,
+            details=_format_details(result.details, None, user_text),
+            reason_code=result.reason_code,
+            original_action=intent.action,
+            normalized_action=action,
+            original_target=intent.target,
+            normalized_target=target,
+            original_user_text=user_text,
+            params=params,
+            data=result.data,
         )
 
     def _run_or_preview(
@@ -304,6 +334,11 @@ BROWSER_WATCH_ACTIONS = {
     "browser_watch_status",
     "browser_watch_events",
     "browser_watch_poll_once",
+}
+
+READ_ONLY_BROWSER_WATCH_ACTIONS = {
+    "browser_watch_status",
+    "browser_watch_events",
 }
 
 BROWSER_ACTION_ALIASES = {

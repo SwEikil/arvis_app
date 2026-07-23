@@ -264,6 +264,23 @@ class ResponseRendererTests(unittest.TestCase):
         self.assertIn("page closed", rendered)
         self.assertNotIn("Generic кліки", rendered)
 
+    def test_browser_watch_last_error_credentials_are_redacted(self) -> None:
+        for status in ("not_running", "command_failed"):
+            with self.subTest(status=status):
+                result = self._result(
+                    action="browser_watch_start",
+                    status=status,
+                    reason_code="browser_watch_error",
+                    message="Browser observer error.",
+                    details="watch_id=text_appeared\nlast_status=error\nlast_error=Cookie: sid=secret-cookie",
+                    normalized_target="text_appeared",
+                )
+
+                rendered = render_final_response("", result)
+
+                self.assertIn("REDACTED", rendered)
+                self.assertNotIn("secret-cookie", rendered)
+
     def test_browser_watch_status_response(self) -> None:
         result = self._result(
             action="browser_watch_status",
@@ -271,13 +288,38 @@ class ResponseRendererTests(unittest.TestCase):
             reason_code=None,
             message="Browser watch status.",
             executed=True,
-            details="profiles: text_appeared\nactive_count: 1\nevents_count: 2",
+            data={
+                "profiles": ["text_appeared", "viewport_change_full"],
+                "active_count": 1,
+                "completed_count": 1,
+                "events_count": 2,
+                "active_watches": [
+                    {
+                        "profile": "text_appeared",
+                        "status": "running",
+                        "events_count": 2,
+                        "last_error": None,
+                        "stop_reason": None,
+                    }
+                ],
+                "completed_watches": [
+                    {
+                        "profile": "viewport_change_full",
+                        "status": "completed",
+                        "events_count": 0,
+                        "last_error": None,
+                        "stop_reason": "timeout",
+                    }
+                ],
+            },
         )
 
         rendered = render_final_response("", result)
 
-        self.assertIn("Active watches: 1", rendered)
-        self.assertIn("Events: 2", rendered)
+        self.assertIn("Активних спостережень: 1", rendered)
+        self.assertIn("подій: 2", rendered)
+        self.assertIn("text_appeared", rendered)
+        self.assertIn("viewport_change_full", rendered)
 
     def test_browser_watch_status_zero_active_does_not_say_active(self) -> None:
         result = self._result(
@@ -286,7 +328,14 @@ class ResponseRendererTests(unittest.TestCase):
             reason_code=None,
             message="Browser watch status.",
             executed=True,
-            details="profiles: text_appeared\nactive_count: 0\nevents_count: 2",
+            data={
+                "profiles": ["text_appeared"],
+                "active_count": 0,
+                "completed_count": 0,
+                "events_count": 2,
+                "active_watches": [],
+                "completed_watches": [],
+            },
         )
 
         rendered = render_final_response("", result)
@@ -316,13 +365,63 @@ class ResponseRendererTests(unittest.TestCase):
             reason_code=None,
             message="Browser watch events.",
             executed=True,
-            details="events_count: 1\nlast_events: now text_appeared text_appeared",
+            data={
+                "events": [
+                    {
+                        "timestamp": "2026-07-23T10:00:00+00:00",
+                        "profile": "text_appeared",
+                        "event_type": "text_appeared",
+                        "page_url": "https://example.com/?token=REDACTED&view=ok",
+                    }
+                ],
+                "events_count": 1,
+                "matching_events_count": 1,
+                "valid_events_count": 1,
+                "skipped_records": 2,
+                "filters": {"limit": 5},
+            },
         )
 
         rendered = render_final_response("", result)
 
-        self.assertIn("Показую Browser Observer events", rendered)
+        self.assertIn("Останні події Browser Observer", rendered)
+        self.assertIn("text_appeared", rendered)
+        self.assertIn("token=REDACTED", rendered)
+        self.assertIn("Пропущено пошкоджених записів: 2", rendered)
         self.assertNotIn("Generic кліки", rendered)
+
+    def test_browser_watch_events_no_filter_matches_is_explicit(self) -> None:
+        result = self._result(
+            action="browser_watch_events",
+            status="executed",
+            reason_code=None,
+            message="Browser watch events.",
+            executed=True,
+            data={
+                "events": [],
+                "events_count": 0,
+                "matching_events_count": 0,
+                "valid_events_count": 10,
+                "skipped_records": 0,
+                "filters": {"profile": "missing", "limit": 5},
+            },
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertEqual(rendered, "За заданими фільтрами подій Browser Observer не знайдено, сер.")
+
+    def test_browser_watch_events_invalid_filter_error_is_ukrainian(self) -> None:
+        result = self._result(
+            action="browser_watch_events",
+            status="invalid_params",
+            reason_code="browser_watch_events_invalid_filters",
+            message="Limit має бути від 1 до 100.",
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertEqual(rendered, "Limit має бути від 1 до 100.")
 
     def test_browser_watch_missing_start_url_response(self) -> None:
         result = self._result(
@@ -612,6 +711,7 @@ class ResponseRendererTests(unittest.TestCase):
         is_safety_block: bool = False,
         normalized_target: str | None = None,
         params: dict[str, object] | None = None,
+        data: dict[str, object] | None = None,
     ) -> CommandResult:
         return CommandResult(
             executed=executed,
@@ -624,6 +724,7 @@ class ResponseRendererTests(unittest.TestCase):
             normalized_action=action,
             normalized_target=normalized_target,
             params=params,
+            data=data,
         )
 
 

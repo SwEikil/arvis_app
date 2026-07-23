@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from actions.apps import APP_WHITELIST
 from actions.browser_agent import BROWSER_TASKS
+from actions.browser_observer_log import sanitize_text
+from actions.browser_observer_log import sanitize_url
 from command_router import CommandResult
 from intent_resolver import ResolvedIntent
 
@@ -26,6 +28,9 @@ def render_final_response(
 
     if status == "blocked_dangerous" or command_result.is_safety_block:
         return "Ні, сер. Це небезпечна дія, я її не виконуватиму."
+
+    if status == "invalid_params" and action == "browser_watch_events":
+        return sanitize_text(command_result.message)
 
     minecraft_response = _render_minecraft(action, command_result)
     if minecraft_response is not None:
@@ -94,7 +99,7 @@ def render_final_response(
         details = _parse_details(command_result.details)
         watch_id = details.get("watch_id") or details.get("profile") or command_result.normalized_target or ""
         last_status = details.get("last_status") or details.get("status") or "not_running"
-        last_error = details.get("last_error") or ""
+        last_error = sanitize_text(details.get("last_error") or "")
         response = f"Немає активного спостереження {watch_id}, сер. Останній стан: {last_status}."
         if last_error:
             response = f"{response} Помилка: {last_error}."
@@ -103,7 +108,7 @@ def render_final_response(
     if status == "command_failed":
         if action.startswith("browser_watch_"):
             details = _parse_details(command_result.details)
-            last_error = details.get("last_error") or details.get("error") or command_result.message
+            last_error = sanitize_text(details.get("last_error") or details.get("error") or command_result.message)
             return f"Browser Observer повернув помилку, сер: {last_error}."
         if action == "media_status":
             return "Не знайшов активний media player, сер."
@@ -328,6 +333,7 @@ def _render_browser_task_executed(result: CommandResult) -> str:
 
 def _render_browser_watch_executed(action: str, result: CommandResult) -> str:
     details = _parse_details(result.details)
+    data = result.data or {}
     if action == "browser_watch_start":
         watch_id = details.get("watch_id") or result.normalized_target or ""
         return f"Запустив фонове спостереження, сер: {watch_id}. {WATCH_SAFETY_SHORT}"
@@ -335,23 +341,100 @@ def _render_browser_watch_executed(action: str, result: CommandResult) -> str:
         watch_id = details.get("watch_id") or result.normalized_target or ""
         return f"Зупинив фонове спостереження, сер: {watch_id}."
     if action == "browser_watch_status":
-        profiles = details.get("profiles") or "(none)"
-        events_count = details.get("events_count") or "0"
-        active_count = details.get("active_count") or "0"
-        if active_count.strip() == "0":
-            return f"Browser Observer доступний, сер. Активних спостережень немає. Профілі: {profiles}. Events: {events_count}."
-        return f"Browser Observer активний, сер. Профілі: {profiles}. Active watches: {active_count}. Events: {events_count}."
+        profiles_value = data.get("profiles")
+        profiles = ", ".join(str(item) for item in profiles_value) if isinstance(profiles_value, list) else details.get("profiles") or "(none)"
+        events_count = int(data.get("events_count") or details.get("events_count") or 0)
+        active_watches = data.get("active_watches")
+        completed_watches = data.get("completed_watches")
+        active_count = len(active_watches) if isinstance(active_watches, list) else int(details.get("active_count") or 0)
+        completed_count = len(completed_watches) if isinstance(completed_watches, list) else int(details.get("completed_count") or 0)
+        if active_count == 0:
+            response = (
+                "Browser Observer доступний, сер. Активних спостережень немає. "
+                f"Завершених: {completed_count}. Профілі: {profiles}. Подій: {events_count}."
+            )
+        else:
+            response = (
+                f"Browser Observer активний, сер. Активних спостережень: {active_count}, "
+                f"завершених: {completed_count}, подій: {events_count}. Профілі: {profiles}."
+            )
+        summaries = _watch_status_summaries(active_watches, completed_watches)
+        return f"{response} {' '.join(summaries)}".strip()
     if action == "browser_watch_events":
+        events = data.get("events")
+        filters = data.get("filters")
+        skipped_records = int(data.get("skipped_records") or 0)
+        if isinstance(events, list):
+            if not events:
+                if isinstance(filters, dict) and any(key != "limit" for key in filters):
+                    return "За заданими фільтрами подій Browser Observer не знайдено, сер."
+                return "Журнал Browser Observer поки порожній, сер."
+            rows = [_event_summary(event) for event in events if isinstance(event, dict)]
+            skipped = f" Пропущено пошкоджених записів: {skipped_records}." if skipped_records else ""
+            return f"Останні події Browser Observer, сер: {' | '.join(rows)}.{skipped}"
         events_count = details.get("events_count") or "0"
         last_events = details.get("last_events") or ""
         if last_events:
-            return f"Показую Browser Observer events, сер. Всього: {events_count}. Останні: {last_events}."
-        return "Browser Observer events поки порожні, сер."
+            return f"Показую події Browser Observer, сер. Всього: {events_count}. Останні: {last_events}."
+        return "Журнал Browser Observer поки порожній, сер."
     if action == "browser_watch_poll_once":
-        event_type = details.get("event_type") or "event"
-        message = details.get("message") or result.message
+        event_type = sanitize_text(details.get("event_type") or "event")
+        message = sanitize_text(details.get("message") or result.message)
         return f"Poll-once завершився, сер. Знайшов подію спостереження: {event_type}. {message}."
-    return result.message
+    return sanitize_text(result.message)
+
+
+def _watch_status_summaries(active: object, completed: object) -> list[str]:
+    summaries: list[str] = []
+    for label, watches in (("Активні", active), ("Завершені", completed)):
+        if not isinstance(watches, list) or not watches:
+            continue
+        values: list[str] = []
+        for watch in watches:
+            if not isinstance(watch, dict):
+                continue
+            profile = sanitize_text(watch.get("profile") or watch.get("watch_id") or "watch")
+            status = _display_watch_status(watch.get("status"))
+            events_count = int(watch.get("events_count") or 0)
+            reason = _display_watch_reason(watch.get("last_error") or watch.get("stop_reason"))
+            suffix = f", причина: {reason}" if reason else ""
+            values.append(f"{profile} ({status}, подій: {events_count}{suffix})")
+        if values:
+            summaries.append(f"{label}: {', '.join(values)}.")
+    return summaries
+
+
+def _event_summary(event: dict[str, object]) -> str:
+    timestamp = sanitize_text(event.get("timestamp") or "")
+    profile = sanitize_text(event.get("profile") or event.get("watch_id") or "watch")
+    event_type = sanitize_text(event.get("event_type") or "event")
+    page_url = sanitize_url(event.get("page_url"))
+    page = f", {page_url}" if page_url else ""
+    return f"{timestamp} {profile} {event_type}{page}".strip()
+
+
+def _display_watch_status(value: object) -> str:
+    status = sanitize_text(value or "unknown")
+    return {
+        "starting": "запускається",
+        "running": "працює",
+        "completed": "завершено",
+        "stopped": "зупинено",
+        "blocked": "заблоковано",
+        "error": "помилка",
+        "not_configured": "не налаштовано",
+        "unknown": "невідомо",
+    }.get(status, status)
+
+
+def _display_watch_reason(value: object) -> str:
+    reason = sanitize_text(value or "")
+    return {
+        "timeout": "тайм-аут",
+        "explicit_stop": "зупинено командою",
+        "shutdown": "завершення Arvis",
+        "test_iteration_limit": "тестовий ліміт ітерацій",
+    }.get(reason, reason)
 
 
 def _clean_browser_site_result(value: str | None) -> str:

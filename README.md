@@ -195,6 +195,10 @@ Debug files are written under `.runtime/browser_debug/`.
 
 Browser Observation Core is the public-safe observer path. It observes only: visible browser viewport, DOM/text signals from a provided Playwright-like page, structured events, JSONL logs, and user-facing notifications. Private local extensions may subscribe to those events, but hands/actions stay outside the public repo.
 
+The versioned JSONL schema, compatibility rules, URL sanitization, structured
+status, and event filters are documented in
+[`docs/browser_observer.md`](docs/browser_observer.md).
+
 Public observer boundaries:
 
 - No generic auto-click, keypress, reward claiming, anti-idle, farming, CAPTCHA/login/payment/download bypass, arbitrary URL automation, or full desktop control.
@@ -211,6 +215,18 @@ Safe observation actions:
 - `browser_watch_status`
 - `browser_watch_events`
 - `browser_watch_poll_once`, target `<profile_name>`
+
+`browser_watch_status` and `browser_watch_events` are read-only and return real
+data even while global dry-run is enabled. Start, stop, and poll-once remain
+dry-run previews.
+
+`browser_watch_events` supports AND-combined `profile`, `source`, `event_type`,
+`url`, `domain`, `from`, `to`, `limit`, and exclusive `after_event_id` filters.
+The deterministic command syntax uses explicit `key=value` parameters:
+
+```text
+покажи події спостереження profile=text_appeared event_type=text_appeared domain=example.com limit=10
+```
 
 Example:
 

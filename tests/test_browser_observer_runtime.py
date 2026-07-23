@@ -73,6 +73,7 @@ class BrowserObserverRuntimeTests(unittest.TestCase):
         result = BrowserObserverRuntime(observer=observer, page_provider=provider).poll_once(profile)
 
         self.assertEqual(result.status, "event")
+        self.assertEqual(event.source, "poll_once")
         observer.poll_once.assert_called_once_with(profile, provider.page)
         observer.write_event.assert_called_once_with(event)
 

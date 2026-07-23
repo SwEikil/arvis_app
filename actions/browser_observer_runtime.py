@@ -10,6 +10,7 @@ from actions.browser_observer import SAFETY_NOTICE
 from actions.browser_observer import WatchEvent
 from actions.browser_observer import WatchProfile
 from actions.browser_observer import _url_allowed
+from actions.browser_observer_log import sanitize_event_data
 from config import ARVIS_BROWSER_OBSERVER_HEADFUL
 
 
@@ -197,6 +198,7 @@ class BrowserObserverRuntime:
 
         result = self.page_provider.with_page(profile.start_url or "", observe)
         if result.event is not None:
+            result.event.source = "poll_once"
             self.observer.write_event(result.event)
         return result
 
@@ -226,7 +228,10 @@ def _not_configured(reason_code: str, message: str, extra: dict[str, str] | None
 
 
 def _details(values: dict[str, object]) -> str:
-    return "\n".join(f"{key}: {value}" for key, value in values.items())
+    cleaned = sanitize_event_data(values, key="details")
+    if not isinstance(cleaned, dict):
+        return ""
+    return "\n".join(f"{key}: {value}" for key, value in cleaned.items())
 
 
 def _close_quietly(value: object | None) -> None:

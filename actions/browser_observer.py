@@ -3,12 +3,24 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from dataclasses import dataclass
+from dataclasses import field
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
 import re
 from typing import Any
 from urllib.parse import urlparse
+from uuid import uuid4
+
+from actions.browser_observer_log import EVENT_SCHEMA_VERSION
+from actions.browser_observer_log import EventQuery
+from actions.browser_observer_log import count_valid_events
+from actions.browser_observer_log import event_to_v1_record
+from actions.browser_observer_log import normalize_event_record
+from actions.browser_observer_log import read_event_log
+from actions.browser_observer_log import sanitize_event_data
+from actions.browser_observer_log import sanitize_text
+from actions.browser_observer_log import sanitize_url
 
 
 WATCH_MODES = {"dom_selector", "text_appeared", "viewport_change", "template_match"}
@@ -51,6 +63,13 @@ class WatchEvent:
     center: dict | None
     screenshot_path: str | None
     metadata: dict
+    schema_version: int = EVENT_SCHEMA_VERSION
+    event_id: str = field(default_factory=lambda: str(uuid4()))
+    profile: str = ""
+    source: str = "browser_observer"
+    page_url: str | None = None
+    page_title: str | None = None
+    payload: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -71,46 +90,64 @@ class BrowserObserver:
         self._previous_frames: dict[str, bytes] = {}
 
     def poll_once(self, profile: WatchProfile, page: object) -> WatchEvent | None:
+        current_url = ""
+        page_title = ""
         try:
             current_url = _page_url(page)
+            page_title = _page_title(page)
             validation = self.validate_profile(profile, current_url)
             if validation is not None:
-                return self._event(
-                    profile,
-                    "observer_blocked" if validation.status == "blocked" else "observer_not_configured",
-                    validation.message,
-                    confidence=None,
-                    metadata={"reason_code": validation.reason_code, "url": current_url, "mode": profile.mode},
+                return self._with_page_context(
+                    self._event(
+                        profile,
+                        "observer_blocked" if validation.status == "blocked" else "observer_not_configured",
+                        validation.message,
+                        confidence=None,
+                        metadata={"reason_code": validation.reason_code, "url": current_url, "mode": profile.mode},
+                    ),
+                    current_url,
+                    page_title,
                 )
 
             if profile.mode == "dom_selector":
-                return self._poll_dom_selector(profile, page, current_url)
+                return self._with_page_context(self._poll_dom_selector(profile, page, current_url), current_url, page_title)
             if profile.mode == "text_appeared":
-                return self._poll_text_appeared(profile, page, current_url)
+                return self._with_page_context(self._poll_text_appeared(profile, page, current_url), current_url, page_title)
             if profile.mode == "viewport_change":
-                return self._poll_viewport_change(profile, page, current_url)
+                return self._with_page_context(self._poll_viewport_change(profile, page, current_url), current_url, page_title)
             if profile.mode == "template_match":
-                return self._poll_template_match(profile, page, current_url)
-            return self._event(
-                profile,
-                "observer_not_configured",
-                f"Unsupported watch mode: {profile.mode}",
-                confidence=None,
-                metadata={"reason_code": "unsupported_watch_mode", "mode": profile.mode},
+                return self._with_page_context(self._poll_template_match(profile, page, current_url), current_url, page_title)
+            return self._with_page_context(
+                self._event(
+                    profile,
+                    "observer_not_configured",
+                    f"Unsupported watch mode: {profile.mode}",
+                    confidence=None,
+                    metadata={"reason_code": "unsupported_watch_mode", "mode": profile.mode},
+                ),
+                current_url,
+                page_title,
             )
         except Exception as exc:
-            return self._event(
-                profile,
-                "observer_error",
-                f"Browser observer error: {type(exc).__name__}",
-                confidence=None,
-                metadata={"error": str(exc), "error_type": type(exc).__name__, "mode": profile.mode},
+            return self._with_page_context(
+                self._event(
+                    profile,
+                    "observer_error",
+                    f"Browser observer error: {type(exc).__name__}",
+                    confidence=None,
+                    metadata={"error": str(exc), "error_type": type(exc).__name__, "mode": profile.mode},
+                ),
+                current_url,
+                page_title,
             )
 
     def write_event(self, event: WatchEvent) -> None:
+        record = event_to_v1_record(asdict(event), self.project_root)
+        if normalize_event_record(record, 0) is None:
+            raise ValueError("Browser Observer event does not satisfy schema version 1.")
         self.events_path.parent.mkdir(parents=True, exist_ok=True)
         with self.events_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(asdict(event), ensure_ascii=False, sort_keys=True) + "\n")
+            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
 
     def load_profile(self, path: str | Path) -> WatchProfile:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -244,7 +281,10 @@ class BrowserObserver:
         filename = f"{_timestamp().replace(':', '').replace('.', '_')}.png"
         path = directory / filename
         path.write_bytes(screenshot)
-        return str(path)
+        try:
+            return str(path.resolve().relative_to(self.project_root))
+        except ValueError:
+            return ""
 
     def _event(
         self,
@@ -269,7 +309,16 @@ class BrowserObserver:
             center=center,
             screenshot_path=screenshot_path,
             metadata=metadata or {},
+            profile=profile.name,
         )
+
+    @staticmethod
+    def _with_page_context(event: WatchEvent | None, page_url: str, page_title: str) -> WatchEvent | None:
+        if event is None:
+            return None
+        event.page_url = page_url or None
+        event.page_title = page_title or None
+        return event
 
 
 def resolve_viewport_region(viewport_width: int, viewport_height: int, region: dict | None) -> dict:
@@ -341,8 +390,8 @@ def format_watch_profile_details(profile: WatchProfile) -> str:
         [
             f"profile: {profile.name}",
             f"mode: {profile.mode}",
-            f"start_url: {profile.start_url or ''}",
-            f"url_allowlist: {', '.join(profile.url_allowlist)}",
+            f"start_url: {sanitize_url(profile.start_url)}",
+            f"url_allowlist: {', '.join(sanitize_url(url) for url in profile.url_allowlist if sanitize_url(url))}",
             f"area: {profile.area}",
             f"region: {json.dumps(profile.region, ensure_ascii=False, sort_keys=True) if profile.region else 'full'}",
             SAFETY_NOTICE,
@@ -354,42 +403,34 @@ def format_watch_event_details(event: WatchEvent) -> str:
     details = [
         f"profile: {event.watch_id}",
         f"event_type: {event.event_type}",
-        f"message: {event.message}",
+        f"message: {sanitize_text(event.message)}",
         f"timestamp: {event.timestamp}",
         f"confidence: {event.confidence}" if event.confidence is not None else "confidence: ",
     ]
-    for key, value in sorted(event.metadata.items()):
+    if event.page_url:
+        details.append(f"page_url: {sanitize_url(event.page_url)}")
+    metadata = sanitize_event_data(event.metadata, key="metadata")
+    for key, value in sorted(metadata.items() if isinstance(metadata, dict) else []):
         details.append(f"{key}: {value}")
     return "\n".join(details)
 
 
 def read_event_log_details(path: Path, limit: int = 5, profile: str | None = None) -> str:
-    if not path.exists():
-        return "events_count: 0\nlast_events: "
-    lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    last_events: list[str] = []
-    visible_count = 0
-    for line in lines[-limit:]:
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if profile and payload.get("watch_id") != profile and payload.get("metadata", {}).get("profile") != profile:
-            continue
-        visible_count += 1
-        last_events.append(f"{payload.get('timestamp', '')} {payload.get('watch_id', '')} {payload.get('event_type', '')}".strip())
+    result = read_event_log(path, EventQuery(limit=limit, profile=profile))
+    last_events = [
+        f"{event.get('timestamp', '')} {event.get('profile', '')} {event.get('event_type', '')}".strip()
+        for event in result.events
+    ]
     return "\n".join(
         [
-            f"events_count: {visible_count if profile else len(lines)}",
+            f"events_count: {len(result.events)}",
             f"last_events: {' | '.join(last_events)}",
         ]
     )
 
 
 def event_count(path: Path) -> int:
-    if not path.exists():
-        return 0
-    return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+    return count_valid_events(path)
 
 
 def _url_allowed(current_url: str, allowlist: list[str]) -> bool:
@@ -422,6 +463,13 @@ def _page_text(page: object) -> str:
     if hasattr(locator, "text_content"):
         return str(locator.text_content())
     return ""
+
+
+def _page_title(page: object) -> str:
+    title = getattr(page, "title", None)
+    if callable(title):
+        return str(title() or "")
+    return str(title or "")
 
 
 def _viewport_size(page: object) -> tuple[int, int]:

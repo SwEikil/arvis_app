@@ -761,7 +761,7 @@ def resolve_with_heuristics(
     if browser_task is not None:
         return _with_voice_correction(browser_task, correction)
 
-    browser_watch = _resolve_browser_watch(text)
+    browser_watch = _resolve_browser_watch(text, correction.corrected_text)
     if browser_watch is not None:
         return _with_voice_correction(browser_watch, correction)
 
@@ -1206,7 +1206,7 @@ def _resolve_browser_task(text: str) -> ResolvedIntent | None:
     return None
 
 
-def _resolve_browser_watch(text: str) -> ResolvedIntent | None:
+def _resolve_browser_watch(text: str, raw_text: str = "") -> ResolvedIntent | None:
     start_match = re.search(r"(?:стеж за профілем|запусти спостереження)\s+([a-z0-9_-]+(?:\s+[a-z0-9_-]+)*)", text)
     if start_match:
         profile_name = "_".join(start_match.group(1).split())
@@ -1247,7 +1247,15 @@ def _resolve_browser_watch(text: str) -> ResolvedIntent | None:
             matched="browser_watch_status",
         )
 
-    if _contains_any(text, {"покажи події спостереження", "show watch events", "browser watch events"}):
+    if _contains_any(
+        text,
+        {
+            "покажи події спостереження",
+            "покажи события наблюдения",
+            "show watch events",
+            "browser watch events",
+        },
+    ):
         return ResolvedIntent(
             action="browser_watch_events",
             target="observer",
@@ -1257,6 +1265,7 @@ def _resolve_browser_watch(text: str) -> ResolvedIntent | None:
             source="heuristic_user_text",
             reason="User text asks for browser observer events.",
             matched="browser_watch_events",
+            params=_browser_event_params(raw_text),
         )
 
     match = re.search(r"(?:перевір профіль спостереження|poll watch profile)\s+([a-z0-9_-]+(?:\s+[a-z0-9_-]+)*)", text)
@@ -1379,6 +1388,14 @@ def _sanitize_params(action: str | None, raw_params: object) -> dict[str, object
         return {"level_percent": get_int_param(params, "level_percent", 50, 0, 100)}
     if action in {"media_seek_forward", "media_seek_backward"}:
         return {"seconds": get_int_param(params, "seconds", 5, 1, 300)}
+    if action == "browser_watch_events":
+        return {
+            key: value
+            for key, value in params.items()
+            if key in {"profile", "source", "event_type", "url", "domain", "from", "to", "limit", "after_event_id"}
+            and isinstance(value, (str, int))
+            and not isinstance(value, bool)
+        }
     return {}
 
 
@@ -1392,7 +1409,8 @@ def _build_llm_prompt(user_text: str, command_history: list[dict[str, object]]) 
         "Use browser_watch_* only for configured observer profiles; never create arbitrary profiles or URLs from natural language.\n"
         "For Minecraft server phrases, use the local Minecraft Server Manager actions and do not ask for IP/domain.\n"
         f"Allowed actions: {sorted(ALLOWED_ACTIONS)}\n"
-        "Optional params: step_percent for volume_up/volume_down, level_percent for volume_set, seconds for media_seek_forward/media_seek_backward.\n"
+        "Optional params: step_percent for volume_up/volume_down, level_percent for volume_set, seconds for media_seek_forward/media_seek_backward. "
+        "For browser_watch_events only: profile, source, event_type, url, domain, from, to, limit, after_event_id.\n"
         "If unclear, set action null and confidence below 0.65.\n"
         f"Recent command history: {json.dumps(recent_history, ensure_ascii=False)}\n"
         f"User text: {user_text}\n"
@@ -1409,6 +1427,20 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _browser_event_params(raw_text: str) -> dict[str, object]:
+    supported = {"profile", "source", "event_type", "url", "domain", "from", "to", "limit", "after_event_id"}
+    params: dict[str, object] = {}
+    for match in re.finditer(r"(?<!\S)([A-Za-z_]+)=([^\s]+)", raw_text or ""):
+        key = match.group(1).lower()
+        if key not in supported:
+            continue
+        value: object = match.group(2).strip()
+        if key == "limit" and str(value).isdigit():
+            value = int(str(value))
+        params[key] = value
+    return params
 
 
 def _normalize_text(value: str | None) -> str:

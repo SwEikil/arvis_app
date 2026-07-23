@@ -168,7 +168,54 @@ class BrowserObserverTests(unittest.TestCase):
 
             rows = (Path(tmp) / ".runtime" / "browser_observer" / "events.jsonl").read_text(encoding="utf-8").splitlines()
             self.assertEqual(len(rows), 1)
-            self.assertEqual(json.loads(rows[0])["event_type"], "text_appeared")
+            payload = json.loads(rows[0])
+            self.assertEqual(payload["schema_version"], 1)
+            self.assertTrue(payload["event_id"])
+            self.assertEqual(payload["profile"], "text_watch")
+            self.assertEqual(payload["source"], "browser_observer")
+            self.assertEqual(payload["event_type"], "text_appeared")
+            self.assertEqual(payload["page_url"], "https://example.com/")
+            self.assertNotIn("region", payload)
+            self.assertNotIn("coordinates", payload)
+            self.assertNotIn("screenshot_path", payload)
+
+    def test_event_log_sanitizes_url_before_write(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            observer = BrowserObserver(project_root=tmp)
+            profile = WatchProfile(
+                name="text_watch",
+                mode="text_appeared",
+                url_allowlist=["https://example.com/"],
+                text="ok",
+            )
+            event = observer.poll_once(
+                profile,
+                FakePage(url="https://example.com/?ToKeN=secret&view=ok#private", content="ok"),
+            )
+            self.assertIsNotNone(event)
+
+            observer.write_event(event)
+
+            payload = json.loads(observer.events_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["page_url"], "https://example.com/?ToKeN=REDACTED&view=ok")
+        self.assertNotIn("secret", json.dumps(payload))
+        self.assertNotIn("private", json.dumps(payload))
+
+    def test_events_receive_unique_ids(self) -> None:
+        observer = BrowserObserver()
+        profile = WatchProfile(
+            name="text_watch",
+            mode="text_appeared",
+            url_allowlist=["https://example.com/"],
+            text="ok",
+        )
+
+        first = observer.poll_once(profile, FakePage(content="ok"))
+        second = observer.poll_once(profile, FakePage(content="ok"))
+
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        self.assertNotEqual(first.event_id, second.event_id)
 
     def test_observer_source_does_not_use_public_forbidden_actions(self) -> None:
         source = inspect.getsource(browser_observer)

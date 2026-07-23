@@ -848,6 +848,8 @@ def show_command_router(router: CommandRouter, result: RouterCommandResult) -> N
     table.add_row("message", result.message)
     if result.details:
         table.add_row("details", result.details)
+    if result.data:
+        table.add_row("data", Pretty(result.data, expand_all=True))
 
     console.print(Panel(table, title="COMMAND ROUTER", border_style="magenta"))
 

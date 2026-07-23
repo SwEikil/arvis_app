@@ -166,6 +166,39 @@ class IntentResolverTests(unittest.TestCase):
         self.assertEqual(resolved.risk, "safe")
         self.assertTrue(should_pass_to_router(resolved))
 
+    def test_browser_watch_events_preserves_explicit_filters(self) -> None:
+        resolved = self.resolver.resolve(
+            "покажи події спостереження "
+            "profile=text_appeared source=background_watch event_type=text_appeared "
+            "domain=example.com from=2026-07-23T10:00:00Z to=2026-07-23T11:00:00+00:00 "
+            "limit=10 after_event_id=event-1",
+            use_llm=False,
+        )
+
+        self.assertEqual(resolved.action, "browser_watch_events")
+        self.assertEqual(
+            resolved.params,
+            {
+                "profile": "text_appeared",
+                "source": "background_watch",
+                "event_type": "text_appeared",
+                "domain": "example.com",
+                "from": "2026-07-23T10:00:00Z",
+                "to": "2026-07-23T11:00:00+00:00",
+                "limit": 10,
+                "after_event_id": "event-1",
+            },
+        )
+
+    def test_browser_watch_events_russian_phrase(self) -> None:
+        resolved = self.resolver.resolve(
+            "покажи события наблюдения profile=text_appeared limit=2",
+            use_llm=False,
+        )
+
+        self.assertEqual(resolved.action, "browser_watch_events")
+        self.assertEqual(resolved.params, {"profile": "text_appeared", "limit": 2})
+
     def test_browser_watch_poll_profile_phrase(self) -> None:
         resolved = self.resolver.resolve("перевір профіль спостереження viewport_change_full", use_llm=False)
 
