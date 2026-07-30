@@ -1,5 +1,7 @@
 # Browser Observer
 
+[← Documentation index](README.md) · [Project README](../README.md)
+
 Browser Observer is the public observation-only browser subsystem. It may inspect
 configured pages, detect reviewed signals, write events, report status, and notify
 the user. It does not click, type, submit forms, navigate arbitrary URLs, attach to

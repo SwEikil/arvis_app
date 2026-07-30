@@ -10,6 +10,10 @@ Use this file as the main guide for Codex/AI agents working on `SwEikil/arvis_ap
 
 Arvis is a local-first Python console assistant. It is designed to run on the user's own machine with Ollama and a terminal UI, so reliability and safety matter more than flashy automation.
 
+The consolidated application baseline is Arvis v0.3.1. The canonical application
+version is stored in `VERSION`. Schema and subsystem contract versions, such as
+Browser Observer event schema v1, are separate from the application version.
+
 Current implemented features:
 
 - Terminal REPL chat with Rich UI.
@@ -21,10 +25,12 @@ Current implemented features:
 - Dry-run mode enabled by default.
 - Doctor Mode for runtime, config, privacy, Ollama, action readiness, storage, and git checks.
 - Self reload/restart through `/reload` and `/restart` using `.runtime/reload_state.json`.
-- Optional voice command layer v0.1 with explicit one-shot microphone input.
+- Optional voice command layer with explicit one-shot microphone input.
 - Local desktop actions for media, volume, app launch, and Minecraft server management.
 - Whitelisted website launch targets such as YouTube, Google, GitHub, and ChatGPT.
 - Experimental controlled-browser task support for explicit whitelisted tasks such as HumanBenchmark Aim.
+- Observation-only Browser Observer with JSONL events, controlled poll-once, and in-process watcher lifecycle.
+- Standalone Arvis MCP Context Servant for bounded project facts and local ignored memory hints.
 
 The project language in code identifiers is English. User-facing REPL text is mostly Ukrainian with the existing informal Arvis tone. Do not rewrite the app into formal corporate language.
 
@@ -95,12 +101,15 @@ With a local virtual environment:
 .venv/bin/python main.py
 .venv/bin/python main.py doctor
 .venv/bin/python -m unittest discover -s tests
+.venv/bin/python -m compileall -q .
 ```
 
-A useful compile check:
+Baseline CI uses Python 3.11 and runs:
 
 ```bash
-find . -name '*.py' -not -path './.venv/*' -print0 | xargs -0 .venv/bin/python -m py_compile
+.venv/bin/python -m unittest discover -s tests
+.venv/bin/python -m compileall -q .
+.venv/bin/python main.py doctor --json
 ```
 
 Do not require Ollama, audio devices, Flatpak apps, Spotify, Brave, Playwright, OpenCV, a real browser, or a Minecraft server to be running for normal unit tests. Tests should mock those boundaries.
@@ -113,6 +122,7 @@ Runtime dependencies are intentionally small:
 - `rich`
 - `pydantic`
 - `python-dotenv`
+- `mcp` for the standalone MCP Context Servant
 
 Optional voice/STT dependencies must be imported lazily and only when a voice command needs them. Text mode must still work if voice dependencies are missing.
 
@@ -142,6 +152,17 @@ Important files and responsibilities:
 - `tests/` - unittest-based coverage.
 
 Browser observer modules should be observation-first: detect and emit events, not perform generic actions.
+
+Documentation map:
+
+- `README.md` - short project overview, quick start, safety summary, and documentation links.
+- `VERSION` - canonical whole-application version.
+- `CHANGELOG.md` - consolidated public baseline history.
+- `ROADMAP.md` - implemented, next, planned, deferred, and out-of-scope directions.
+- `docs/README.md` - documentation index.
+- `docs/getting_started.md`, `docs/configuration.md`, `docs/commands.md` - setup and usage references.
+- `docs/architecture.md`, `docs/development.md`, `docs/doctor.md` - architecture, contributor workflow, and diagnostics.
+- `docs/voice.md`, `docs/browser_vision_agent.md`, `docs/browser_observer.md`, `docs/minecraft_server.md`, `docs/mcp_context_servant.md` - subsystem references.
 
 ## MCP context servant workflow
 
@@ -209,7 +230,7 @@ For generic browser observation modules:
 - Only observe, detect, log, and notify.
 - Public observer = eyes/events, private extension = hands/actions.
 - A clean Playwright Chromium page provider is allowed for observation-only `browser_watch_poll_once`.
-- In-process background watches are allowed only for observation/log/notify. They must stop on app exit/reload/restart and must not persist/resume in public v0.3.
+- In-process background watches are allowed only for observation/log/notify. They must stop on app exit/reload/restart and must not persist/resume in the public baseline.
 - Public observer runtime must not attach to existing browser sessions through CDP, use system browser launchers, or use persistent user profiles.
 - Cross-process background daemons and private action modules are future/private work unless explicitly scoped and kept out of generic public actions.
 - Watch the visible browser viewport first, not a fixed desktop pixel region.
@@ -346,7 +367,7 @@ Before committing meaningful changes, run:
 For syntax/import confidence, also run a compile check when practical:
 
 ```bash
-find . -name '*.py' -not -path './.venv/*' -print0 | xargs -0 .venv/bin/python -m py_compile
+.venv/bin/python -m compileall -q .
 ```
 
 Add tests for every behavior change. Mock external commands, subprocesses, Ollama HTTP calls, audio devices, `playerctl`, `wpctl`, `tmux`, Flatpak apps, Playwright/browser pages, OpenCV/NumPy boundaries, and filesystem edge cases.
@@ -364,7 +385,7 @@ Add tests for every behavior change. Mock external commands, subprocesses, Ollam
 
 ## Documentation expectations
 
-Update README when you change:
+Update the relevant specialized document when you change:
 
 - user-visible commands
 - env keys
@@ -375,21 +396,23 @@ Update README when you change:
 - browser task/observer behavior
 - Minecraft server setup/behavior
 
+Keep the root README short and update only its overview, quick start, or links
+when the change affects them. Do not move full configuration, action, or
+troubleshooting references back into the root README.
+
 Keep examples safe and local-only. Use placeholders, never real secrets or personal local paths.
 
 When documenting observer-style browser features, describe them as observation/event modules. Do not present them as generic game bots or auto-clickers.
 
 ## Current development direction
 
+The next major direction after the v0.3.1 baseline is Context & Memory Core:
+rolling conversation summary, separate user memory, Memory Router, relevant
+context building, memory management commands, and privacy/secret filtering.
+`ROADMAP.md` is the canonical planning summary.
+
 The project is moving toward a reliable local assistant that can gradually control safe desktop tasks. Prefer boring, testable safety over flashy features.
 
-Good next-step features usually look like this:
-
-- better resolver accuracy for natural Ukrainian/Russian/English commands
-- more tests around ambiguous and unsafe inputs
-- improved Doctor diagnostics
-- safer action previews
-- public browser observation core that emits events without generic actions
-- private ignored local extension hooks for user-specific automation
-- richer but local-only runtime state
-- better voice normalization without background listening
+Supporting baseline work may still improve resolver accuracy, ambiguous/unsafe
+tests, Doctor diagnostics, safe previews, and voice normalization without
+background listening. Keep feature sequencing in `ROADMAP.md`.

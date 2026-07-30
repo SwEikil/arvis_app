@@ -1,5 +1,7 @@
 # Arvis MCP Context Servant
 
+[← Documentation index](README.md) · [Project README](../README.md)
+
 ## Universal MCP Server Behavior
 
 Arvis MCP Context Servant exists so MCP-compatible coding agents can get compact project facts without spending large amounts of context on first-pass exploration. It is a fact servant, not the main programmer. The coding agent remains responsible for deciding what to change, verifying files directly, editing code, and running tests.

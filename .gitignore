@@ -9,6 +9,8 @@ venv/
 logs/
 .cache/
 .runtime/
+.local_extensions/
+.runtime/local_extensions/
 .arvis_mcp_memory/
 .codex/
 models/
