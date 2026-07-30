@@ -292,7 +292,10 @@ class ResponseRendererTests(unittest.TestCase):
                 "profiles": ["text_appeared", "viewport_change_full"],
                 "active_count": 1,
                 "completed_count": 1,
-                "events_count": 2,
+                "valid_events_count": 2,
+                "legacy_events_count": 0,
+                "invalid_events_count": 0,
+                "unsupported_events_count": 0,
                 "active_watches": [
                     {
                         "profile": "text_appeared",
@@ -317,7 +320,7 @@ class ResponseRendererTests(unittest.TestCase):
         rendered = render_final_response("", result)
 
         self.assertIn("Активних спостережень: 1", rendered)
-        self.assertIn("подій: 2", rendered)
+        self.assertIn("валідних подій у журналі: 2", rendered)
         self.assertIn("text_appeared", rendered)
         self.assertIn("viewport_change_full", rendered)
 
@@ -332,7 +335,10 @@ class ResponseRendererTests(unittest.TestCase):
                 "profiles": ["text_appeared"],
                 "active_count": 0,
                 "completed_count": 0,
-                "events_count": 2,
+                "valid_events_count": 2,
+                "legacy_events_count": 0,
+                "invalid_events_count": 0,
+                "unsupported_events_count": 0,
                 "active_watches": [],
                 "completed_watches": [],
             },
@@ -340,10 +346,42 @@ class ResponseRendererTests(unittest.TestCase):
 
         rendered = render_final_response("", result)
 
-        self.assertIn("доступний", rendered)
+        self.assertIn("зараз не запущено", rendered)
         self.assertIn("Активних спостережень немає", rendered)
-        self.assertNotIn("активний", rendered)
+        self.assertNotIn("Browser Observer працює", rendered)
         self.assertNotIn("Generic кліки", rendered)
+
+    def test_browser_watch_status_renderer_redacts_last_error_credentials(self) -> None:
+        result = self._result(
+            action="browser_watch_status",
+            status="executed",
+            reason_code=None,
+            message="Browser watch status.",
+            executed=True,
+            data={
+                "active_count": 1,
+                "completed_count": 0,
+                "valid_events_count": 0,
+                "legacy_events_count": 0,
+                "invalid_events_count": 0,
+                "unsupported_events_count": 0,
+                "active_watches": [
+                    {
+                        "profile": "text_appeared",
+                        "status": "error",
+                        "events_count": 0,
+                        "last_error": "Authorization: Bearer renderer-status-secret",
+                        "stop_reason": None,
+                    }
+                ],
+                "completed_watches": [],
+            },
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("REDACTED", rendered)
+        self.assertNotIn("renderer-status-secret", rendered)
 
     def test_browser_watch_no_event_response(self) -> None:
         result = self._result(
@@ -371,23 +409,41 @@ class ResponseRendererTests(unittest.TestCase):
                         "timestamp": "2026-07-23T10:00:00+00:00",
                         "profile": "text_appeared",
                         "event_type": "text_appeared",
-                        "page_url": "https://example.com/?token=REDACTED&view=ok",
+                        "page": {
+                            "url": "https://example.com/?token=REDACTED&view=ok",
+                            "title": "Cookie: session=renderer-title-secret",
+                        },
+                        "message": "Authorization: Bearer renderer-message-secret",
                     }
                 ],
+                "returned_count": 1,
+                "matched_count": 3,
                 "events_count": 1,
                 "matching_events_count": 1,
                 "valid_events_count": 1,
-                "skipped_records": 2,
-                "filters": {"limit": 5},
+                "invalid_events_count": 2,
+                "unsupported_events_count": 1,
+                "next_position": 4,
+                "truncated": True,
+                "filters": {
+                    "profile": None,
+                    "event_types": None,
+                    "url_prefix": "https://example.com/?token=REDACTED",
+                    "limit": 1,
+                },
             },
         )
 
         rendered = render_final_response("", result)
 
-        self.assertIn("Останні події Browser Observer", rendered)
+        self.assertIn("Події Browser Observer", rendered)
         self.assertIn("text_appeared", rendered)
         self.assertIn("token=REDACTED", rendered)
-        self.assertIn("Пропущено пошкоджених записів: 2", rendered)
+        self.assertIn("Показано останні 1 з 3", rendered)
+        self.assertIn("пошкоджених/невалідних: 2", rendered)
+        self.assertIn("непідтримуваних версій: 1", rendered)
+        self.assertNotIn("renderer-title-secret", rendered)
+        self.assertNotIn("renderer-message-secret", rendered)
         self.assertNotIn("Generic кліки", rendered)
 
     def test_browser_watch_events_no_filter_matches_is_explicit(self) -> None:
@@ -399,17 +455,68 @@ class ResponseRendererTests(unittest.TestCase):
             executed=True,
             data={
                 "events": [],
+                "returned_count": 0,
+                "matched_count": 0,
                 "events_count": 0,
                 "matching_events_count": 0,
                 "valid_events_count": 10,
                 "skipped_records": 0,
-                "filters": {"profile": "missing", "limit": 5},
+                "next_position": 10,
+                "truncated": False,
+                "filters": {
+                    "profile": "missing",
+                    "event_types": None,
+                    "since": None,
+                    "until": None,
+                    "site": None,
+                    "url_prefix": None,
+                    "limit": 5,
+                    "after_event_id": None,
+                    "after_position": None,
+                },
             },
         )
 
         rendered = render_final_response("", result)
 
         self.assertEqual(rendered, "За заданими фільтрами подій Browser Observer не знайдено, сер.")
+
+    def test_browser_watch_events_empty_log_reports_skipped_records_cleanly(self) -> None:
+        result = self._result(
+            action="browser_watch_events",
+            status="executed",
+            reason_code=None,
+            message="Browser watch events.",
+            executed=True,
+            data={
+                "events": [],
+                "returned_count": 0,
+                "matched_count": 0,
+                "events_count": 0,
+                "valid_events_count": 0,
+                "invalid_events_count": 1,
+                "unsupported_events_count": 1,
+                "next_position": 2,
+                "truncated": False,
+                "filters": {
+                    "profile": None,
+                    "event_types": None,
+                    "since": None,
+                    "until": None,
+                    "site": None,
+                    "url_prefix": None,
+                    "limit": 5,
+                    "after_event_id": None,
+                    "after_position": None,
+                },
+            },
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("Журнал Browser Observer поки порожній", rendered)
+        self.assertIn("пошкоджених/невалідних: 1", rendered)
+        self.assertIn("непідтримуваних версій: 1", rendered)
 
     def test_browser_watch_events_invalid_filter_error_is_ukrainian(self) -> None:
         result = self._result(
@@ -422,6 +529,19 @@ class ResponseRendererTests(unittest.TestCase):
         rendered = render_final_response("", result)
 
         self.assertEqual(rendered, "Limit має бути від 1 до 100.")
+
+    def test_browser_watch_events_filter_error_redacts_credentials(self) -> None:
+        result = self._result(
+            action="browser_watch_events",
+            status="invalid_params",
+            reason_code="browser_watch_events_invalid_filters",
+            message="Authorization: Bearer renderer-filter-secret",
+        )
+
+        rendered = render_final_response("", result)
+
+        self.assertIn("REDACTED", rendered)
+        self.assertNotIn("renderer-filter-secret", rendered)
 
     def test_browser_watch_missing_start_url_response(self) -> None:
         result = self._result(

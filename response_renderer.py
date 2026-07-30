@@ -341,37 +341,47 @@ def _render_browser_watch_executed(action: str, result: CommandResult) -> str:
         watch_id = details.get("watch_id") or result.normalized_target or ""
         return f"Зупинив фонове спостереження, сер: {watch_id}."
     if action == "browser_watch_status":
-        profiles_value = data.get("profiles")
-        profiles = ", ".join(str(item) for item in profiles_value) if isinstance(profiles_value, list) else details.get("profiles") or "(none)"
-        events_count = int(data.get("events_count") or details.get("events_count") or 0)
         active_watches = data.get("active_watches")
         completed_watches = data.get("completed_watches")
-        active_count = len(active_watches) if isinstance(active_watches, list) else int(details.get("active_count") or 0)
-        completed_count = len(completed_watches) if isinstance(completed_watches, list) else int(details.get("completed_count") or 0)
+        active_count = int(data.get("active_count") or 0)
+        completed_count = int(data.get("completed_count") or 0)
+        valid_events_count = int(data.get("valid_events_count") or data.get("events_count") or 0)
         if active_count == 0:
             response = (
-                "Browser Observer доступний, сер. Активних спостережень немає. "
-                f"Завершених: {completed_count}. Профілі: {profiles}. Подій: {events_count}."
+                "Browser Observer зараз не запущено, сер. Активних спостережень немає. "
+                f"Завершених: {completed_count}. Валідних подій у журналі: {valid_events_count}."
             )
         else:
             response = (
-                f"Browser Observer активний, сер. Активних спостережень: {active_count}, "
-                f"завершених: {completed_count}, подій: {events_count}. Профілі: {profiles}."
+                f"Browser Observer працює, сер. Активних спостережень: {active_count}, "
+                f"завершених: {completed_count}, валідних подій у журналі: {valid_events_count}."
             )
         summaries = _watch_status_summaries(active_watches, completed_watches)
         return f"{response} {' '.join(summaries)}".strip()
     if action == "browser_watch_events":
         events = data.get("events")
         filters = data.get("filters")
-        skipped_records = int(data.get("skipped_records") or 0)
+        invalid_events = int(data.get("invalid_events_count") or 0)
+        unsupported_events = int(data.get("unsupported_events_count") or 0)
         if isinstance(events, list):
+            diagnostics: list[str] = []
+            if invalid_events:
+                diagnostics.append(f"пошкоджених/невалідних: {invalid_events}")
+            if unsupported_events:
+                diagnostics.append(f"непідтримуваних версій: {unsupported_events}")
+            skipped = f" Пропущено записів ({', '.join(diagnostics)})." if diagnostics else ""
             if not events:
-                if isinstance(filters, dict) and any(key != "limit" for key in filters):
-                    return "За заданими фільтрами подій Browser Observer не знайдено, сер."
-                return "Журнал Browser Observer поки порожній, сер."
+                if _has_event_filters(filters) or int(data.get("valid_events_count") or 0):
+                    return f"За заданими фільтрами подій Browser Observer не знайдено, сер.{skipped}"
+                return f"Журнал Browser Observer поки порожній, сер.{skipped}"
             rows = [_event_summary(event) for event in events if isinstance(event, dict)]
-            skipped = f" Пропущено пошкоджених записів: {skipped_records}." if skipped_records else ""
-            return f"Останні події Browser Observer, сер: {' | '.join(rows)}.{skipped}"
+            matched_count = int(data.get("matched_count") or data.get("matching_events_count") or len(rows))
+            limited = (
+                f" Показано останні {len(rows)} з {matched_count}."
+                if bool(data.get("truncated"))
+                else ""
+            )
+            return f"Події Browser Observer, сер: {' | '.join(rows)}.{limited}{skipped}"
         events_count = details.get("events_count") or "0"
         last_events = details.get("last_events") or ""
         if last_events:
@@ -408,9 +418,20 @@ def _event_summary(event: dict[str, object]) -> str:
     timestamp = sanitize_text(event.get("timestamp") or "")
     profile = sanitize_text(event.get("profile") or event.get("watch_id") or "watch")
     event_type = sanitize_text(event.get("event_type") or "event")
-    page_url = sanitize_url(event.get("page_url"))
+    page_data = event.get("page")
+    page_url = sanitize_url(page_data.get("url")) if isinstance(page_data, dict) else ""
     page = f", {page_url}" if page_url else ""
     return f"{timestamp} {profile} {event_type}{page}".strip()
+
+
+def _has_event_filters(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    return any(
+        item is not None
+        for key, item in value.items()
+        if key != "limit"
+    )
 
 
 def _display_watch_status(value: object) -> str:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import atexit
 from dataclasses import dataclass
+from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 import re
 import threading
@@ -12,13 +14,13 @@ from actions.browser_observer import EVENT_LOG_PATH
 from actions.browser_observer import BrowserObserver
 from actions.browser_observer import WatchEvent
 from actions.browser_observer import WatchProfile
-from actions.browser_observer import event_count
 from actions.browser_observer import format_watch_event_details
 from actions.browser_observer import format_watch_profile_details
 from actions.browser_observer import list_watch_profiles
 from actions.browser_observer import load_watch_profile
 from actions.browser_observer import normalize_browser_watch_profile_name
 from actions.browser_observer import _url_allowed
+from actions.browser_observer_log import EventQuery
 from actions.browser_observer_log import parse_event_query
 from actions.browser_observer_log import read_event_log
 from actions.browser_observer_log import sanitize_event_data
@@ -101,6 +103,7 @@ class ActiveWatch:
     last_error: str = ""
     stop_reason: str = ""
     completed_at: str = ""
+    completed_monotonic: float | None = None
     current_url: str = ""
     block_type: str = ""
     signal: str = ""
@@ -134,7 +137,7 @@ class BrowserWatchManager:
         self.start_threads = start_threads
         self._lock = threading.Lock()
         self._active: dict[str, ActiveWatch] = {}
-        self._completed: dict[str, ActiveWatch] = {}
+        self._completed: list[ActiveWatch] = []
         self._recent_events: dict[str, float] = {}
         self._event_times: list[float] = []
 
@@ -268,30 +271,25 @@ class BrowserWatchManager:
     def status(self) -> WatchManagerResult:
         with self._lock:
             active = [self._watch_data_locked(watch) for watch in self._active.values()]
-            completed = [self._watch_data_locked(watch) for watch in self._completed.values()]
+            completed = [self._watch_data_locked(watch) for watch in self._completed]
             profiles = list_watch_profiles(self.project_root)
-        events_count = event_count(self.project_root / EVENT_LOG_PATH)
+        event_log = read_event_log(self.project_root / EVENT_LOG_PATH, EventQuery(limit=1))
         data: dict[str, object] = {
             "profiles": profiles,
             "active_count": len(active),
             "completed_count": len(completed),
-            "events_count": events_count,
+            "valid_events_count": event_log.valid_events_count,
+            "legacy_events_count": event_log.legacy_events_count,
+            "invalid_events_count": event_log.invalid_events_count,
+            "unsupported_events_count": event_log.unsupported_events_count,
+            "events_count": event_log.valid_events_count,
             "active_watches": active,
             "completed_watches": completed,
         }
-        details = _details(
-            {
-                "profiles": ", ".join(profiles) or "(none)",
-                "active_count": len(active),
-                "completed_count": len(completed),
-                "events_count": events_count,
-            }
-        )
         return WatchManagerResult(
             status="status",
             reason_code=None,
             message="Browser watch status.",
-            details=details,
             executed=True,
             data=data,
         )
@@ -310,7 +308,7 @@ class BrowserWatchManager:
             return WatchManagerResult(
                 status="invalid_params",
                 reason_code="browser_watch_event_cursor_not_found",
-                message=f"Подію з event_id {query.after_event_id} не знайдено, сер.",
+                message="Подію з указаним after_event_id не знайдено, сер.",
                 data=result.as_dict(),
             )
         data = result.as_dict()
@@ -318,13 +316,6 @@ class BrowserWatchManager:
             status="events",
             reason_code=None,
             message="Browser watch events.",
-            details=_details(
-                {
-                    "events_count": data["events_count"],
-                    "matching_events_count": data["matching_events_count"],
-                    "skipped_records": data["skipped_records"],
-                }
-            ),
             executed=True,
             data=data,
         )
@@ -528,8 +519,9 @@ class BrowserWatchManager:
         watch.last_error = sanitize_text(error) if status == "error" else ""
         watch.stop_reason = sanitize_text(error)
         watch.completed_at = self.timestamp_func()
+        watch.completed_monotonic = self.time_func()
         self._active.pop(watch.watch_id, None)
-        self._completed[watch.watch_id] = watch
+        self._completed.append(watch)
 
     def _find_active_locked(self, target: str) -> ActiveWatch | None:
         active = self._active.get(target)
@@ -541,11 +533,8 @@ class BrowserWatchManager:
         return None
 
     def _find_completed_locked(self, target: str) -> ActiveWatch | None:
-        completed = self._completed.get(target)
-        if completed is not None:
-            return completed
-        for watch in self._completed.values():
-            if watch.profile.name == target:
+        for watch in reversed(self._completed):
+            if watch.watch_id == target or watch.profile.name == target:
                 return watch
         return None
 
@@ -597,7 +586,8 @@ class BrowserWatchManager:
         )
 
     def _watch_data_locked(self, watch: ActiveWatch) -> dict[str, object]:
-        elapsed = max(0.0, self.time_func() - watch.started_monotonic)
+        end_monotonic = watch.completed_monotonic if watch.completed_monotonic is not None else self.time_func()
+        elapsed = max(0.0, end_monotonic - watch.started_monotonic)
         filters: dict[str, object] = {
             "mode": watch.profile.mode,
             "url_allowlist": [sanitize_url(url) for url in watch.profile.url_allowlist if sanitize_url(url)],
@@ -616,11 +606,11 @@ class BrowserWatchManager:
             "profile": watch.profile.name,
             "source": "background_watch",
             "status": watch.status,
-            "started_at": watch.started_at,
-            "completed_at": watch.completed_at or None,
+            "started_at": _utc_timestamp_or_none(watch.started_at),
+            "completed_at": _utc_timestamp_or_none(watch.completed_at),
             "elapsed_seconds": round(elapsed, 2),
-            "last_event_type": watch.last_event or None,
-            "last_event_at": watch.last_event_at or None,
+            "last_event_type": sanitize_text(watch.last_event) or None,
+            "last_event_at": _utc_timestamp_or_none(watch.last_event_at),
             "events_count": watch.events_count,
             "suppressed_events": watch.suppressed_duplicates + watch.suppressed_rate_limited,
             "suppressed_duplicates": watch.suppressed_duplicates,
@@ -872,10 +862,22 @@ def _details(values: dict[str, object]) -> str:
 
 
 def _timestamp() -> str:
-    from datetime import datetime
-    from datetime import timezone
-
     return datetime.now(timezone.utc).isoformat()
+
+
+def _utc_timestamp_or_none(value: object) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith(("Z", "z")):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc).isoformat()
 
 
 atexit.register(shutdown_all_browser_watch_managers)

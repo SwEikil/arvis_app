@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import builtins
+from datetime import datetime
+from datetime import timezone
 import inspect
 import json
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from uuid import UUID
 
 from actions import browser_observer
 from actions.browser_observer import BrowserObserver
 from actions.browser_observer import WatchProfile
 from actions.browser_observer import resolve_viewport_region
+from actions.browser_observer_log import read_event_log
 
 
 class FakeLocator:
@@ -163,6 +167,7 @@ class BrowserObserverTests(unittest.TestCase):
             profile = WatchProfile(name="text_watch", mode="text_appeared", url_allowlist=["https://example.com/"], text="ok")
             event = observer.poll_once(profile, FakePage(content="ok"))
             self.assertIsNotNone(event)
+            event.timestamp = "2026-07-30T12:00:00+03:00"
 
             observer.write_event(event)
 
@@ -170,14 +175,29 @@ class BrowserObserverTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             payload = json.loads(rows[0])
             self.assertEqual(payload["schema_version"], 1)
-            self.assertTrue(payload["event_id"])
+            UUID(payload["event_id"])
             self.assertEqual(payload["profile"], "text_watch")
             self.assertEqual(payload["source"], "browser_observer")
             self.assertEqual(payload["event_type"], "text_appeared")
-            self.assertEqual(payload["page_url"], "https://example.com/")
-            self.assertNotIn("region", payload)
-            self.assertNotIn("coordinates", payload)
-            self.assertNotIn("screenshot_path", payload)
+            self.assertEqual(payload["timestamp"], "2026-07-30T09:00:00+00:00")
+            self.assertEqual(payload["page"], {"url": "https://example.com/"})
+            self.assertEqual(payload["payload"], {"mode": "text_appeared", "text": "ok"})
+            self.assertEqual(
+                set(payload),
+                {
+                    "schema_version",
+                    "event_id",
+                    "watch_id",
+                    "timestamp",
+                    "event_type",
+                    "source",
+                    "profile",
+                    "payload",
+                    "page",
+                    "message",
+                    "confidence",
+                },
+            )
 
     def test_event_log_sanitizes_url_before_write(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -197,11 +217,108 @@ class BrowserObserverTests(unittest.TestCase):
             observer.write_event(event)
 
             payload = json.loads(observer.events_path.read_text(encoding="utf-8"))
-        self.assertEqual(payload["page_url"], "https://example.com/?ToKeN=REDACTED&view=ok")
+        self.assertEqual(payload["page"]["url"], "https://example.com/?ToKeN=REDACTED&view=ok")
         self.assertNotIn("secret", json.dumps(payload))
         self.assertNotIn("private", json.dumps(payload))
 
+    def test_writer_recursively_sanitizes_jsonl_and_reader_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            observer = BrowserObserver(project_root=tmp)
+            profile = WatchProfile(
+                name="text_watch",
+                mode="text_appeared",
+                url_allowlist=["https://example.com/"],
+                text="ok",
+            )
+            event = observer.poll_once(
+                profile,
+                FakePage(
+                    url="https://alice:url-password@example.com/page?token=url-token&view=ok#private",
+                    content="ok",
+                ),
+            )
+            self.assertIsNotNone(event)
+            event.payload = {
+                "nested": {"apiKey": "payload-key", "safe": "keep"},
+                "headers": {
+                    "Authorization": "Bearer header-token",
+                    "Cookie": "session=cookie-value",
+                    "Content-Type": "application/json",
+                },
+            }
+            event.metadata = {
+                "sequence": {"authToken": "metadata-token", "safe": 7},
+                "mode": "text_appeared",
+            }
+            event.message = "Authorization: Bearer message-token"
+            event.page_title = "Cookie: session=title-cookie"
+            event.region = {"x": 1, "y": 2, "width": 3, "height": 4}
+            event.bbox = {"x": 5, "y": 6, "width": 7, "height": 8}
+            event.center = {"x": 9, "y": 10}
+            event.screenshot_path = ".runtime/browser_observer/screenshots/text_watch/frame.png"
+
+            observer.write_event(event)
+
+            raw = observer.events_path.read_text(encoding="utf-8")
+            stored = json.loads(raw)
+            returned = read_event_log(observer.events_path).events[0]
+
+        for secret in (
+            "alice",
+            "url-password",
+            "url-token",
+            "payload-key",
+            "header-token",
+            "cookie-value",
+            "metadata-token",
+            "message-token",
+            "title-cookie",
+            "#private",
+        ):
+            with self.subTest(secret=secret):
+                self.assertNotIn(secret, raw)
+                self.assertNotIn(secret, json.dumps(returned))
+        self.assertEqual(stored["page"]["url"], "https://example.com/page?token=REDACTED&view=ok")
+        self.assertEqual(stored["page"]["title"], "Cookie: REDACTED")
+        self.assertEqual(stored["message"], "Authorization: REDACTED")
+        self.assertEqual(returned["page"]["title"], "Cookie: REDACTED")
+        self.assertEqual(returned["message"], "Authorization: REDACTED")
+        self.assertEqual(stored["payload"]["nested"]["safe"], "keep")
+        self.assertEqual(stored["payload"]["headers"]["Content-Type"], "application/json")
+        self.assertEqual(stored["payload"]["region"], {"height": 4, "width": 3, "x": 1, "y": 2})
+        self.assertEqual(stored["payload"]["bbox"], {"height": 8, "width": 7, "x": 5, "y": 6})
+        self.assertEqual(stored["payload"]["center"], {"x": 9, "y": 10})
+        self.assertEqual(
+            stored["payload"]["screenshot_path"],
+            ".runtime/browser_observer/screenshots/text_watch/frame.png",
+        )
+        self.assertEqual(stored["metadata"]["sequence"]["safe"], 7)
+
     def test_events_receive_unique_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            observer = BrowserObserver(project_root=tmp)
+            profile = WatchProfile(
+                name="text_watch",
+                mode="text_appeared",
+                url_allowlist=["https://example.com/"],
+                text="ok",
+            )
+
+            first = observer.poll_once(profile, FakePage(content="ok"))
+            second = observer.poll_once(profile, FakePage(content="ok"))
+            self.assertIsNotNone(first)
+            self.assertIsNotNone(second)
+            observer.write_event(first)
+            observer.write_event(second)
+            rows = [
+                json.loads(line)
+                for line in observer.events_path.read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertNotEqual(first.event_id, second.event_id)
+        self.assertNotEqual(rows[0]["event_id"], rows[1]["event_id"])
+
+    def test_event_timestamp_is_utc_iso_8601(self) -> None:
         observer = BrowserObserver()
         profile = WatchProfile(
             name="text_watch",
@@ -210,12 +327,11 @@ class BrowserObserverTests(unittest.TestCase):
             text="ok",
         )
 
-        first = observer.poll_once(profile, FakePage(content="ok"))
-        second = observer.poll_once(profile, FakePage(content="ok"))
+        event = observer.poll_once(profile, FakePage(content="ok"))
 
-        self.assertIsNotNone(first)
-        self.assertIsNotNone(second)
-        self.assertNotEqual(first.event_id, second.event_id)
+        self.assertIsNotNone(event)
+        timestamp = datetime.fromisoformat(event.timestamp)
+        self.assertEqual(timestamp.utcoffset(), timezone.utc.utcoffset(timestamp))
 
     def test_observer_source_does_not_use_public_forbidden_actions(self) -> None:
         source = inspect.getsource(browser_observer)

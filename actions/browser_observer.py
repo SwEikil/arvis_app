@@ -143,11 +143,12 @@ class BrowserObserver:
 
     def write_event(self, event: WatchEvent) -> None:
         record = event_to_v1_record(asdict(event), self.project_root)
-        if normalize_event_record(record, 0) is None:
+        normalized = normalize_event_record(record, 0)
+        if normalized is None:
             raise ValueError("Browser Observer event does not satisfy schema version 1.")
         self.events_path.parent.mkdir(parents=True, exist_ok=True)
         with self.events_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+            handle.write(json.dumps(normalized, ensure_ascii=False, sort_keys=True) + "\n")
 
     def load_profile(self, path: str | Path) -> WatchProfile:
         data = json.loads(Path(path).read_text(encoding="utf-8"))

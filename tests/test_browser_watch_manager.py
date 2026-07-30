@@ -18,18 +18,64 @@ from actions.browser_watch_manager import BrowserWatchManager
 
 class BrowserWatchManagerTests(unittest.TestCase):
     def test_start_watch_creates_active_watch(self) -> None:
-        manager = BrowserWatchManager(
-            observer=Mock(spec=BrowserObserver),
-            page_provider=FakeProvider(),
-            start_threads=False,
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = BrowserWatchManager(
+                project_root=tmp,
+                observer=Mock(spec=BrowserObserver),
+                page_provider=FakeProvider(),
+                start_threads=False,
+            )
 
-        result = manager.start_watch(_profile())
-        status = manager.status()
+            result = manager.start_watch(_profile())
+            status = manager.status()
 
-        self.assertEqual(result.status, "started")
-        self.assertIn("active_count: 1", status.details or "")
-        manager.shutdown_all()
+            self.assertEqual(result.status, "started")
+            self.assertEqual(status.data["active_count"], 1)
+            self.assertEqual(status.data["completed_count"], 0)
+            self.assertEqual(status.data["valid_events_count"], 0)
+            self.assertIsNone(status.details)
+            watch = status.data["active_watches"][0]
+            self.assertEqual(watch["watch_id"], "text_appeared")
+            self.assertEqual(watch["profile"], "text_appeared")
+            self.assertEqual(watch["source"], "background_watch")
+            self.assertEqual(watch["status"], "running")
+            self.assertIsNotNone(watch["started_at"])
+            self.assertIsNone(watch["completed_at"])
+            self.assertIsNone(watch["last_event_type"])
+            self.assertIsNone(watch["last_event_at"])
+            self.assertIsNone(watch["last_error"])
+            self.assertIsNone(watch["stop_reason"])
+            self.assertEqual(
+                watch["limits"],
+                {
+                    "interval_ms": 500,
+                    "timeout_seconds": 300,
+                    "debounce_seconds": 30,
+                    "max_events_per_minute": 30,
+                },
+            )
+            manager.shutdown_all()
+
+    def test_status_without_watches_returns_empty_structured_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = BrowserWatchManager(
+                project_root=tmp,
+                observer=Mock(spec=BrowserObserver),
+                page_provider=FakeProvider(),
+                start_threads=False,
+            )
+
+            status = manager.status()
+
+        self.assertTrue(status.executed)
+        self.assertEqual(status.data["active_count"], 0)
+        self.assertEqual(status.data["completed_count"], 0)
+        self.assertEqual(status.data["valid_events_count"], 0)
+        self.assertEqual(status.data["legacy_events_count"], 0)
+        self.assertEqual(status.data["invalid_events_count"], 0)
+        self.assertEqual(status.data["unsupported_events_count"], 0)
+        self.assertEqual(status.data["active_watches"], [])
+        self.assertEqual(status.data["completed_watches"], [])
 
     def test_duplicate_start_returns_already_running(self) -> None:
         manager = BrowserWatchManager(observer=Mock(spec=BrowserObserver), page_provider=FakeProvider(), start_threads=False)
@@ -328,7 +374,8 @@ class BrowserWatchManagerTests(unittest.TestCase):
         stop = manager.stop_watch("text_appeared")
 
         self.assertEqual(start.status, "started")
-        self.assertIn("active_count: 1", status.details or "")
+        self.assertEqual(status.data["active_count"], 1)
+        self.assertEqual(len(status.data["active_watches"]), 1)
         self.assertEqual(stop.status, "stopped")
 
     def test_observer_error_event_has_meaningful_last_error(self) -> None:
@@ -359,6 +406,114 @@ class BrowserWatchManagerTests(unittest.TestCase):
         self.assertEqual(completed["last_error"], "poll_once RuntimeError: page closed")
         self.assertNotEqual(completed["last_error"], "error")
 
+    def test_status_normalizes_completion_and_last_event_times_to_utc(self) -> None:
+        timestamps = iter(
+            [
+                "2026-07-30T12:00:00+02:00",
+                "2026-07-30T12:05:00+02:00",
+            ]
+        )
+        observer = Mock(spec=BrowserObserver)
+        manager = BrowserWatchManager(
+            observer=observer,
+            page_provider=FakeProvider(),
+            timestamp_func=lambda: next(timestamps),
+            start_threads=False,
+        )
+        manager.start_watch(_profile())
+        with manager._lock:  # noqa: SLF001 - test verifies in-memory status serialization.
+            watch = manager._active["text_appeared"]  # noqa: SLF001
+        event = _event("text_appeared")
+        event.timestamp = "2026-07-30T15:03:00+05:00"
+        manager._record_event(watch, event)  # noqa: SLF001
+
+        manager.stop_watch("text_appeared")
+        status = manager.status()
+
+        completed = status.data["completed_watches"][0]
+        self.assertEqual(completed["started_at"], "2026-07-30T10:00:00+00:00")
+        self.assertEqual(completed["completed_at"], "2026-07-30T10:05:00+00:00")
+        self.assertEqual(completed["stop_reason"], "explicit_stop")
+        self.assertEqual(completed["last_event_type"], "text_appeared")
+        self.assertEqual(completed["last_event_at"], "2026-07-30T10:03:00+00:00")
+        self.assertEqual(completed["events_count"], 1)
+
+    def test_status_preserves_repeated_completed_watches_for_same_profile(self) -> None:
+        manager = BrowserWatchManager(
+            observer=Mock(spec=BrowserObserver),
+            page_provider=FakeProvider(),
+            start_threads=False,
+        )
+
+        for _ in range(2):
+            manager.start_watch(_profile())
+            manager.stop_watch("text_appeared")
+        status = manager.status()
+
+        self.assertEqual(status.data["completed_count"], 2)
+        self.assertEqual(len(status.data["completed_watches"]), 2)
+        self.assertEqual(
+            [watch["watch_id"] for watch in status.data["completed_watches"]],
+            ["text_appeared", "text_appeared"],
+        )
+
+    def test_status_reports_journal_diagnostic_counters(self) -> None:
+        legacy = {
+            "watch_id": "legacy",
+            "event_type": "text_appeared",
+            "message": "found",
+            "timestamp": "2026-07-23T10:00:00+00:00",
+            "metadata": {},
+        }
+        future = _stored_event("future", "future-event", "text_appeared", "2026-07-23T10:01:00+00:00")
+        future["schema_version"] = 2
+        with tempfile.TemporaryDirectory() as tmp:
+            event_log = Path(tmp) / ".runtime" / "browser_observer" / "events.jsonl"
+            event_log.parent.mkdir(parents=True)
+            event_log.write_text(
+                "\n".join(
+                    [
+                        json.dumps(_stored_event("one", "event-1", "text_appeared", "2026-07-23T10:00:00+00:00")),
+                        json.dumps(legacy),
+                        "{",
+                        json.dumps(future),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            manager = BrowserWatchManager(project_root=tmp, start_threads=False)
+
+            status = manager.status()
+
+        self.assertEqual(status.data["valid_events_count"], 2)
+        self.assertEqual(status.data["events_count"], 2)
+        self.assertEqual(status.data["legacy_events_count"], 1)
+        self.assertEqual(status.data["invalid_events_count"], 1)
+        self.assertEqual(status.data["unsupported_events_count"], 1)
+
+    def test_status_redacts_credentials_in_watch_data(self) -> None:
+        manager = BrowserWatchManager(
+            observer=Mock(spec=BrowserObserver),
+            page_provider=FakeProvider(),
+            start_threads=False,
+        )
+        manager.start_watch(_profile())
+        with manager._lock:  # noqa: SLF001 - test verifies status privacy.
+            watch = manager._active["text_appeared"]  # noqa: SLF001
+            watch.last_error = "Authorization: Bearer status-error-secret"
+            watch.stop_reason = "Cookie: sid=status-reason-secret"
+
+        status = manager.status()
+        serialized = json.dumps(status.data)
+        active = status.data["active_watches"][0]
+
+        self.assertNotIn("status-error-secret", serialized)
+        self.assertNotIn("status-reason-secret", serialized)
+        self.assertEqual(active["last_error"], "Authorization: REDACTED")
+        self.assertEqual(active["stop_reason"], "Cookie: REDACTED")
+        manager.shutdown_all()
+
     def test_status_supports_multiple_watches_as_structured_records(self) -> None:
         manager = BrowserWatchManager(
             observer=Mock(spec=BrowserObserver),
@@ -375,6 +530,11 @@ class BrowserWatchManagerTests(unittest.TestCase):
         self.assertEqual(active_status.data["active_count"], 2)
         self.assertEqual(
             {watch["profile"] for watch in active_status.data["active_watches"]},
+            {"one", "two"},
+        )
+        self.assertEqual(len(active_status.data["active_watches"]), 2)
+        self.assertEqual(
+            {watch["watch_id"] for watch in active_status.data["active_watches"]},
             {"one", "two"},
         )
         self.assertEqual(completed_status.data["active_count"], 1)
@@ -420,18 +580,31 @@ class BrowserWatchManagerTests(unittest.TestCase):
                 "observer",
                 {
                     "profile": "one",
-                    "event_type": "text_appeared",
-                    "domain": "example.com",
+                    "event_types": ["text_appeared"],
+                    "site": "example.com",
                     "after_event_id": "event-1",
                     "limit": 5,
                 },
             )
             missing = manager.events("observer", {"after_event_id": "missing"})
+            private_cursor = manager.events(
+                "observer",
+                {"after_event_id": "authorization=manager-cursor-secret"},
+            )
 
         self.assertEqual([event["event_id"] for event in result.data["events"]], ["event-4"])
+        self.assertEqual(result.data["returned_count"], 1)
+        self.assertEqual(result.data["matched_count"], 1)
+        self.assertEqual(result.data["events_count"], 1)
+        self.assertEqual(result.data["next_position"], 4)
+        self.assertFalse(result.data["truncated"])
+        self.assertIsNone(result.details)
         self.assertEqual(missing.status, "invalid_params")
         self.assertEqual(missing.reason_code, "browser_watch_event_cursor_not_found")
         self.assertIn("не знайдено", missing.message)
+        self.assertEqual(private_cursor.status, "invalid_params")
+        self.assertNotIn("manager-cursor-secret", private_cursor.message)
+        self.assertIsNone(private_cursor.data)
 
     def test_manager_source_does_not_use_forbidden_public_actions(self) -> None:
         source = inspect.getsource(browser_watch_manager)
@@ -522,7 +695,8 @@ def _stored_event(profile: str, event_id: str, event_type: str, timestamp: str) 
         "event_type": event_type,
         "source": "background_watch",
         "message": "found",
-        "page_url": "https://example.com/",
+        "page": {"url": "https://example.com/"},
+        "payload": {},
         "metadata": {},
     }
 

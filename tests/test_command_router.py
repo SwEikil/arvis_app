@@ -129,25 +129,27 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
         self.assertIn("profile: text_appeared", result.details or "")
         self.assertNotIn("text_appeared_example", result.details or "")
 
-    def test_browser_watch_status_lists_canonical_text_profile(self) -> None:
+    def test_browser_watch_status_returns_real_structured_data_during_dry_run(self) -> None:
         with patch(
             "command_router.read_browser_watch_action",
             return_value=WatchManagerResult(
                 status="status",
                 reason_code=None,
                 message="Browser watch status.",
-                details="profiles: text_appeared\nactive_count: 0\ncompleted_count: 0\nevents_count: 0",
                 executed=True,
                 data={
                     "profiles": ["text_appeared"],
                     "active_count": 0,
                     "completed_count": 0,
-                    "events_count": 0,
+                    "valid_events_count": 0,
+                    "legacy_events_count": 0,
+                    "invalid_events_count": 0,
+                    "unsupported_events_count": 0,
                     "active_watches": [],
                     "completed_watches": [],
                 },
             ),
-        ):
+        ) as read_only:
             result = CommandRouter(dry_run=True).route(
                 ActionIntent(action="browser_watch_status", target="observer", risk="safe", need_confirmation=False),
                 user_text="статус спостереження",
@@ -155,8 +157,49 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
 
         self.assertTrue(result.executed)
         self.assertEqual(result.status, "executed")
-        self.assertIn("text_appeared", result.details or "")
-        self.assertNotIn("text_appeared_example", result.details or "")
+        self.assertEqual(result.data["profiles"], ["text_appeared"])
+        self.assertEqual(result.data["active_watches"], [])
+        self.assertIsNone(result.details)
+        read_only.assert_called_once_with("browser_watch_status", "observer", {})
+
+    def test_browser_watch_status_read_only_exception_does_not_disable_other_dry_runs(self) -> None:
+        status_result = WatchManagerResult(
+            status="status",
+            reason_code=None,
+            message="Browser watch status.",
+            executed=True,
+            data={
+                "active_count": 0,
+                "completed_count": 0,
+                "valid_events_count": 0,
+                "legacy_events_count": 0,
+                "invalid_events_count": 0,
+                "unsupported_events_count": 0,
+                "active_watches": [],
+                "completed_watches": [],
+            },
+        )
+        router = CommandRouter(dry_run=True)
+        with (
+            patch("command_router.read_browser_watch_action", return_value=status_result) as read_only,
+            patch("command_router.execute_browser_watch_action") as execute,
+        ):
+            status = router.route(
+                ActionIntent(action="browser_watch_status", target="observer", risk="safe", need_confirmation=False),
+                user_text="статус спостереження",
+            )
+            start = router.route(
+                ActionIntent(action="browser_watch_start", target="text_appeared", risk="safe", need_confirmation=False),
+                user_text="стеж за профілем text_appeared",
+            )
+
+        self.assertTrue(status.executed)
+        self.assertEqual(status.status, "executed")
+        self.assertFalse(start.executed)
+        self.assertEqual(start.status, "dry_run")
+        self.assertTrue(router.dry_run)
+        read_only.assert_called_once()
+        execute.assert_not_called()
 
     def test_browser_watch_start_dry_run(self) -> None:
         result = CommandRouter(dry_run=True).route(
@@ -250,13 +293,15 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
                 status="status",
                 reason_code=None,
                 message="Browser watch status.",
-                details="profiles: text_appeared\nactive_count: 1\ncompleted_count: 0\nevents_count: 2",
                 executed=True,
                 data={
                     "profiles": ["text_appeared"],
                     "active_count": 1,
                     "completed_count": 0,
-                    "events_count": 2,
+                    "valid_events_count": 2,
+                    "legacy_events_count": 0,
+                    "invalid_events_count": 0,
+                    "unsupported_events_count": 0,
                     "active_watches": [{"profile": "text_appeared"}],
                     "completed_watches": [],
                 },
@@ -269,7 +314,8 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
 
         self.assertTrue(result.executed)
         self.assertEqual(result.status, "executed")
-        self.assertIn("active_count: 1", result.details or "")
+        self.assertEqual(result.data["active_count"], 1)
+        self.assertEqual(result.data["active_watches"], [{"profile": "text_appeared"}])
 
     def test_browser_watch_events_list(self) -> None:
         with patch(
@@ -278,15 +324,18 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
                 status="events",
                 reason_code=None,
                 message="Browser watch events.",
-                details="events_count: 1\nmatching_events_count: 1\nskipped_records: 0",
                 executed=True,
                 data={
                     "events": [{"event_id": "event-1", "event_type": "text_appeared"}],
+                    "returned_count": 1,
+                    "matched_count": 1,
                     "events_count": 1,
                     "matching_events_count": 1,
                     "valid_events_count": 1,
                     "skipped_records": 0,
-                    "filters": {"limit": 5},
+                    "next_position": 1,
+                    "truncated": False,
+                    "filters": {"profile": None, "event_types": None, "limit": 5},
                 },
             ),
         ):
@@ -297,16 +346,25 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
 
         self.assertTrue(result.executed)
         self.assertEqual(result.status, "executed")
-        self.assertIn("events_count: 1", result.details or "")
+        self.assertEqual(result.data["events_count"], 1)
+        self.assertEqual(result.data["next_position"], 1)
+        self.assertIsNone(result.details)
 
     def test_browser_watch_events_dry_run_executes_read_only_with_filters(self) -> None:
         action_result = WatchManagerResult(
             status="events",
             reason_code=None,
             message="Browser watch events.",
-            details="events_count: 0",
             executed=True,
-            data={"events": [], "events_count": 0, "filters": {"profile": "text_appeared", "limit": 10}},
+            data={
+                "events": [],
+                "returned_count": 0,
+                "matched_count": 0,
+                "events_count": 0,
+                "next_position": 0,
+                "truncated": False,
+                "filters": {"profile": "text_appeared", "limit": 10},
+            },
         )
         with patch("command_router.read_browser_watch_action", return_value=action_result) as read_only:
             result = CommandRouter(dry_run=True).route(
@@ -317,8 +375,9 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
                     need_confirmation=False,
                     params={
                         "profile": "text_appeared",
-                        "event_type": "text_appeared",
-                        "domain": "example.com",
+                        "event_types": ["text_appeared", "future_extension"],
+                        "site": "example.com",
+                        "after_position": 2,
                         "limit": 10,
                     },
                 ),
@@ -332,8 +391,9 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
             "observer",
             {
                 "profile": "text_appeared",
-                "event_type": "text_appeared",
-                "domain": "example.com",
+                "event_types": ["text_appeared", "future_extension"],
+                "site": "example.com",
+                "after_position": 2,
                 "limit": 10,
             },
         )

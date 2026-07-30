@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
+from uuid import UUID
 
 from actions.browser_observer_log import EventQuery
 from actions.browser_observer_log import count_valid_events
@@ -80,7 +82,8 @@ class BrowserObserverLogTests(unittest.TestCase):
             )
 
         self.assertEqual(record["schema_version"], 1)
-        self.assertEqual(record["page_url"], "https://example.com/?token=REDACTED&view=ok")
+        UUID(str(record["event_id"]))
+        self.assertEqual(record["page"], {"url": "https://example.com/?token=REDACTED&view=ok"})
         self.assertEqual(record["metadata"], {"sequence": 4})
         self.assertEqual(
             record["payload"],
@@ -92,8 +95,8 @@ class BrowserObserverLogTests(unittest.TestCase):
             },
         )
         self.assertNotIn("confidence", record)
+        self.assertNotIn("page_url", record)
         self.assertNotIn("region", record)
-        self.assertNotIn("coordinates", record)
         self.assertNotIn("screenshot_path", record)
         self.assertNotIn("secret", json.dumps(record).lower())
 
@@ -118,6 +121,11 @@ class BrowserObserverLogTests(unittest.TestCase):
             "keyboard_layout": "no",
             "tokenizer_version": "one",
             "session_count": 3,
+            "headers": {
+                "Content-Type": "application/json",
+                "Authorization": "secret-header",
+                "Set-Cookie": "secret-cookie",
+            },
         }
 
         cleaned = sanitize_event_data({**sensitive, **safe}, key="payload")
@@ -127,7 +135,13 @@ class BrowserObserverLogTests(unittest.TestCase):
         for key in sensitive:
             with self.subTest(key=key):
                 self.assertEqual(cleaned[key], "REDACTED")
-        for key, value in safe.items():
+        expected_safe = dict(safe)
+        expected_safe["headers"] = {
+            "Content-Type": "application/json",
+            "Authorization": "REDACTED",
+            "Set-Cookie": "REDACTED",
+        }
+        for key, value in expected_safe.items():
             with self.subTest(key=key):
                 self.assertEqual(cleaned[key], value)
         self.assertNotIn("secret-", json.dumps(cleaned))
@@ -189,15 +203,39 @@ class BrowserObserverLogTests(unittest.TestCase):
         self.assertEqual([event["event_id"] for event in result.events], ["event-8", "event-15", "event-22"])
         self.assertEqual(result.matching_events_count, 4)
         self.assertEqual(result.valid_events_count, 30)
+        self.assertTrue(result.truncated)
+        self.assertEqual(result.next_position, 30)
+        self.assertEqual(
+            {
+                key: result.as_dict()[key]
+                for key in ("returned_count", "matched_count", "events_count", "truncated", "next_position")
+            },
+            {
+                "returned_count": 3,
+                "matched_count": 4,
+                "events_count": 3,
+                "truncated": True,
+                "next_position": 30,
+            },
+        )
+
+    def test_returned_events_are_sorted_chronologically(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "events.jsonl"
+            _write_rows(path, [_event(3), _event(1), _event(2)])
+
+            result = read_event_log(path, EventQuery(limit=3))
+
+        self.assertEqual([event["event_id"] for event in result.events], ["event-1", "event-2", "event-3"])
 
     def test_combined_filters_use_and_semantics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "events.jsonl"
             rows = [
-                _event(1, profile="one", source="background_watch", event_type="text_appeared", page_url="https://sub.example.com/a"),
-                _event(2, profile="one", source="poll_once", event_type="text_appeared", page_url="https://sub.example.com/a"),
-                _event(3, profile="one", source="background_watch", event_type="viewport_changed", page_url="https://sub.example.com/a"),
-                _event(4, profile="one", source="background_watch", event_type="text_appeared", page_url="https://other.example/a"),
+                _event(1, profile="one", event_type="text_appeared", page_url="https://sub.example.com/a"),
+                _event(2, profile="two", event_type="text_appeared", page_url="https://sub.example.com/a"),
+                _event(3, profile="one", event_type="viewport_changed", page_url="https://sub.example.com/a"),
+                _event(4, profile="one", event_type="text_appeared", page_url="https://other.example/a"),
             ]
             _write_rows(path, rows)
 
@@ -205,17 +243,94 @@ class BrowserObserverLogTests(unittest.TestCase):
                 path,
                 EventQuery(
                     profile="one",
-                    source="background_watch",
-                    event_type="text_appeared",
-                    domain="example.com",
-                    url="https://sub.example.com/",
-                    from_time=datetime(2026, 7, 23, 10, 0, 1, tzinfo=timezone.utc),
-                    to_time=datetime(2026, 7, 23, 10, 0, 1, tzinfo=timezone.utc),
+                    event_types=("text_appeared",),
+                    site="example.com",
+                    url_prefix="https://sub.example.com/",
+                    since=datetime(2026, 7, 23, 10, 0, 1, tzinfo=timezone.utc),
+                    until=datetime(2026, 7, 23, 10, 0, 2, tzinfo=timezone.utc),
                     limit=10,
                 ),
             )
 
         self.assertEqual([event["event_id"] for event in result.events], ["event-1"])
+
+    def test_event_types_accepts_one_or_many_exact_unknown_types(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "events.jsonl"
+            _write_rows(
+                path,
+                [
+                    _event(1, event_type="text_appeared"),
+                    _event(2, event_type="future_extension"),
+                    _event(3, event_type="viewport_changed"),
+                ],
+            )
+
+            one = read_event_log(path, EventQuery(event_types=("future_extension",), limit=10))
+            many = read_event_log(
+                path,
+                EventQuery(event_types=("text_appeared", "viewport_changed"), limit=10),
+            )
+
+        self.assertEqual([event["event_id"] for event in one.events], ["event-2"])
+        self.assertEqual([event["event_id"] for event in many.events], ["event-1", "event-3"])
+
+    def test_since_is_inclusive_and_until_is_exclusive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "events.jsonl"
+            _write_rows(path, [_event(index) for index in range(4)])
+
+            result = read_event_log(
+                path,
+                EventQuery(
+                    since=datetime(2026, 7, 23, 10, 0, 1, tzinfo=timezone.utc),
+                    until=datetime(2026, 7, 23, 10, 0, 3, tzinfo=timezone.utc),
+                    limit=10,
+                ),
+            )
+
+        self.assertEqual([event["event_id"] for event in result.events], ["event-1", "event-2"])
+
+    def test_site_matches_hostname_and_subdomains_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "events.jsonl"
+            _write_rows(
+                path,
+                [
+                    _event(1, page_url="https://example.com/a"),
+                    _event(2, page_url="https://deep.sub.example.com/a"),
+                    _event(3, page_url="https://notexample.com/a"),
+                ],
+            )
+
+            result = read_event_log(path, EventQuery(site="example.com", limit=10))
+
+        self.assertEqual([event["event_id"] for event in result.events], ["event-1", "event-2"])
+
+    def test_url_prefix_is_normalized_and_preserves_safe_query_fields(self) -> None:
+        query, error = parse_event_query(
+            {"url_prefix": "HTTPS://Example.com/path?token=secret&view=ok"},
+            "observer",
+        )
+        self.assertIsNone(error)
+        assert query is not None
+        self.assertEqual(query.url_prefix, "https://example.com/path?token=REDACTED&view=ok")
+        self.assertNotIn("secret", json.dumps(query.as_dict()))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "events.jsonl"
+            matching = _event(
+                1,
+                page_url="https://example.com/path?token=secret&view=ok&detail=1",
+            )
+            nonmatching = _event(2, page_url="https://example.com/other?view=ok")
+            _write_rows(path, [matching, nonmatching])
+            result = read_event_log(path, query)
+
+        self.assertEqual([event["event_id"] for event in result.events], ["event-1"])
+        serialized = json.dumps(result.as_dict())
+        self.assertNotIn("secret", serialized)
+        self.assertIn("view=ok", serialized)
 
     def test_corrupt_and_invalid_structures_are_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -236,9 +351,36 @@ class BrowserObserverLogTests(unittest.TestCase):
             valid_count = count_valid_events(path)
 
         self.assertEqual(result.valid_events_count, 1)
+        self.assertEqual(result.invalid_events_count, 8)
+        self.assertEqual(result.unsupported_events_count, 0)
+        self.assertEqual(result.legacy_events_count, 0)
         self.assertEqual(result.skipped_records, 8)
         self.assertEqual(result.events[0]["event_id"], "event-4")
         self.assertEqual(valid_count, 1)
+
+    def test_v1_required_fields_and_optional_fields_are_enforced(self) -> None:
+        minimal = _event(1)
+        minimal.pop("message")
+        minimal.pop("metadata")
+        missing_payload = dict(minimal)
+        missing_payload.pop("payload")
+
+        self.assertIsNotNone(normalize_event_record(minimal, 1))
+        self.assertIsNone(normalize_event_record(missing_payload, 2))
+
+        for field in (
+            "schema_version",
+            "event_id",
+            "watch_id",
+            "timestamp",
+            "event_type",
+            "source",
+            "profile",
+        ):
+            with self.subTest(field=field):
+                candidate = dict(minimal)
+                candidate.pop(field)
+                self.assertIsNone(normalize_event_record(candidate, 3))
 
     def test_legacy_event_is_normalized_without_rewriting_file(self) -> None:
         legacy = {
@@ -266,22 +408,95 @@ class BrowserObserverLogTests(unittest.TestCase):
 
             self.assertEqual(path.read_text(encoding="utf-8"), original + "\n")
         event = result.events[0]
-        self.assertEqual(event["schema_version"], 0)
-        self.assertTrue(event["legacy"])
-        self.assertTrue(str(event["event_id"]).startswith("legacy-1-"))
-        self.assertEqual(event["coordinates"], {"bbox": {"x": 1}, "center": {"x": 2}})
-        self.assertEqual(event["page_url"], "https://example.com/?token=REDACTED&safe=1")
+        self.assertEqual(event["schema_version"], 1)
+        UUID(str(event["event_id"]))
+        self.assertEqual(event["payload"]["bbox"], {"x": 1})
+        self.assertEqual(event["payload"]["center"], {"x": 2})
+        self.assertEqual(event["page"]["url"], "https://example.com/?token=REDACTED&safe=1")
+        self.assertEqual(result.valid_events_count, 1)
+        self.assertEqual(result.legacy_events_count, 1)
+        self.assertEqual(result.invalid_events_count, 0)
+        self.assertEqual(result.unsupported_events_count, 0)
 
-    def test_unknown_version_and_event_type_do_not_break_reading(self) -> None:
+    def test_reader_reports_valid_legacy_invalid_and_unsupported_counters(self) -> None:
+        legacy = {
+            "watch_id": "legacy",
+            "event_type": "text_appeared",
+            "message": "found",
+            "timestamp": "2026-07-23T10:00:00+00:00",
+            "region": None,
+            "bbox": None,
+            "center": None,
+            "screenshot_path": None,
+            "metadata": {},
+        }
+        future = _event(2)
+        future["schema_version"] = 2
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "events.jsonl"
+            path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(_event(1)),
+                        json.dumps(legacy),
+                        "{",
+                        json.dumps([]),
+                        json.dumps(future),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            result = read_event_log(path)
+
+        self.assertEqual(result.valid_events_count, 2)
+        self.assertEqual(result.legacy_events_count, 1)
+        self.assertEqual(result.invalid_events_count, 2)
+        self.assertEqual(result.unsupported_events_count, 1)
+        self.assertEqual(result.skipped_records, 3)
+        self.assertEqual(
+            result.as_dict()["diagnostics"],
+            {"valid": 2, "legacy": 1, "invalid": 2, "unsupported": 1},
+        )
+
+    def test_unknown_future_version_is_skipped_but_unknown_event_type_is_valid(self) -> None:
         payload = _event(1, event_type="future_event")
-        payload["schema_version"] = 99
+        future = dict(payload)
+        future["schema_version"] = 99
 
         normalized = normalize_event_record(payload, 1)
+        unsupported = normalize_event_record(future, 2)
 
         self.assertIsNotNone(normalized)
         assert normalized is not None
-        self.assertEqual(normalized["schema_version"], 99)
+        self.assertEqual(normalized["schema_version"], 1)
         self.assertEqual(normalized["event_type"], "future_event")
+        self.assertIsNone(unsupported)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "events.jsonl"
+            _write_rows(path, [payload, future])
+            result = read_event_log(path)
+
+        self.assertEqual(result.valid_events_count, 1)
+        self.assertEqual(result.unsupported_events_count, 1)
+        self.assertEqual(result.invalid_events_count, 0)
+
+    def test_boolean_schema_version_is_invalid_not_version_one(self) -> None:
+        boolean_version = _event(1)
+        boolean_version["schema_version"] = True
+
+        self.assertIsNone(normalize_event_record(boolean_version, 1))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "events.jsonl"
+            _write_rows(path, [boolean_version])
+            result = read_event_log(path)
+
+        self.assertEqual(result.valid_events_count, 0)
+        self.assertEqual(result.invalid_events_count, 1)
+        self.assertEqual(result.unsupported_events_count, 0)
 
     def test_after_event_id_is_exclusive_and_missing_cursor_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -296,6 +511,25 @@ class BrowserObserverLogTests(unittest.TestCase):
         self.assertTrue(result.cursor_found)
         self.assertFalse(missing.cursor_found)
         self.assertEqual(missing.events, [])
+        self.assertEqual(result.next_position, 8)
+
+    def test_after_position_uses_one_based_physical_lines_and_counts_corruption(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "events.jsonl"
+            path.write_text(
+                json.dumps(_event(1)) + "\n{\n" + json.dumps(_event(3)) + "\n",
+                encoding="utf-8",
+            )
+
+            result = read_event_log(path, EventQuery(after_position=1, limit=10))
+            after_corrupt = read_event_log(path, EventQuery(after_position=2, limit=10))
+
+        self.assertEqual([event["event_id"] for event in result.events], ["event-3"])
+        self.assertEqual([event["event_id"] for event in after_corrupt.events], ["event-3"])
+        self.assertEqual(result.next_position, 3)
+        self.assertEqual(result.invalid_events_count, 1)
+        self.assertEqual(result.valid_events_count, 2)
+        self.assertEqual(result.matched_count, 1)
 
     def test_empty_and_large_logs_use_bounded_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -305,21 +539,48 @@ class BrowserObserverLogTests(unittest.TestCase):
             large = read_event_log(path, EventQuery(limit=7))
 
         self.assertEqual(empty.events, [])
+        self.assertEqual(empty.next_position, 0)
         self.assertEqual(large.valid_events_count, 5000)
         self.assertEqual(len(large.events), 7)
         self.assertEqual(large.events[0]["event_id"], "event-4993")
 
-    def test_query_validation_covers_limits_dates_and_cursor(self) -> None:
+    def test_reader_iterates_stream_without_read_or_readlines(self) -> None:
+        class IterationOnlyLog:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def __iter__(self):
+                return iter([json.dumps(_event(1)) + "\n", "{\n", json.dumps(_event(2)) + "\n"])
+
+            def read(self, *args: object) -> str:
+                raise AssertionError("read() must not be used")
+
+            def readlines(self, *args: object) -> list[str]:
+                raise AssertionError("readlines() must not be used")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "events.jsonl"
+            path.touch()
+            with patch.object(Path, "open", return_value=IterationOnlyLog()):
+                result = read_event_log(path, EventQuery(limit=1))
+
+        self.assertEqual([event["event_id"] for event in result.events], ["event-2"])
+        self.assertEqual(result.next_position, 3)
+        self.assertEqual(result.invalid_events_count, 1)
+
+    def test_query_validation_and_normalized_contract(self) -> None:
         query, error = parse_event_query(
             {
                 "profile": "one",
-                "source": "background_watch",
-                "event_type": "text_appeared",
-                "domain": "Example.com",
-                "url": "https://example.com/path?token=secret",
-                "from": "2026-07-23T10:00:00Z",
-                "to": "2026-07-23T11:00:00+00:00",
-                "limit": "100",
+                "event_types": ["text_appeared", "future_extension", "text_appeared"],
+                "site": "Example.com",
+                "url_prefix": "https://example.com/path?token=secret&safe=1",
+                "since": "2026-07-23T10:00:00+02:00",
+                "until": "2026-07-23T11:00:00+00:00",
+                "limit": 100,
                 "after_event_id": "event-1",
             },
             "one",
@@ -327,22 +588,55 @@ class BrowserObserverLogTests(unittest.TestCase):
 
         self.assertIsNone(error)
         assert query is not None
-        self.assertEqual(query.domain, "example.com")
-        self.assertEqual(query.url, "https://example.com/path?token=REDACTED")
+        self.assertEqual(query.site, "example.com")
+        self.assertEqual(query.url_prefix, "https://example.com/path?token=REDACTED&safe=1")
+        self.assertEqual(query.event_types, ("text_appeared", "future_extension"))
+        self.assertEqual(query.since.isoformat(), "2026-07-23T08:00:00+00:00")
         self.assertEqual(query.limit, 100)
+        self.assertEqual(
+            set(query.as_dict()),
+            {
+                "profile",
+                "event_types",
+                "since",
+                "until",
+                "site",
+                "url_prefix",
+                "limit",
+                "after_event_id",
+                "after_position",
+            },
+        )
+        self.assertNotIn("secret", json.dumps(query.as_dict()))
+
+    def test_all_invalid_filters_are_rejected_without_echoing_credentials(self) -> None:
         for params in (
             {"limit": 0},
             {"limit": 101},
-            {"from": "2026-07-23T10:00:00"},
-            {"from": "2026-07-24T10:00:00Z", "to": "2026-07-23T10:00:00Z"},
-            {"domain": "https://example.com"},
+            {"limit": True},
+            {"limit": "10"},
+            {"since": "2026-07-23T10:00:00"},
+            {"since": "not-a-time"},
+            {"since": "2026-07-23T10:00:00Z", "until": "2026-07-23T10:00:00Z"},
+            {"since": "2026-07-24T10:00:00Z", "until": "2026-07-23T10:00:00Z"},
+            {"event_types": []},
+            {"event_types": ""},
+            {"event_types": [True]},
+            {"site": "https://example.com"},
+            {"site": "example.com:443"},
+            {"url_prefix": "file:///private"},
+            {"after_position": -1},
+            {"after_position": True},
+            {"after_position": "1"},
+            {"after_event_id": "event-1", "after_position": 0},
             {"after_event_id": "bad cursor"},
-            {"unknown": "value"},
+            {"authorization=filter-secret": "value"},
         ):
             with self.subTest(params=params):
                 invalid_query, invalid_error = parse_event_query(params, "observer")
                 self.assertIsNone(invalid_query)
                 self.assertIsNotNone(invalid_error)
+                self.assertNotIn("filter-secret", invalid_error or "")
 
 
 def _event(
@@ -362,7 +656,8 @@ def _event(
         "source": source,
         "confidence": 1.0,
         "message": "found",
-        "page_url": page_url,
+        "page": {"url": page_url},
+        "payload": {},
         "metadata": {},
     }
 

@@ -198,6 +198,11 @@ Browser Observation Core is the public-safe observer path. It observes only: vis
 The versioned JSONL schema, compatibility rules, URL sanitization, structured
 status, and event filters are documented in
 [`docs/browser_observer.md`](docs/browser_observer.md).
+Browser Observer writers emit schema v1 only: every record has
+`schema_version`, UUID `event_id`, `watch_id`, UTC `timestamp`, `event_type`,
+`source`, `profile`, and object `payload`; optional page context is stored under
+`page`. The reader keeps legacy normalization in memory and never rewrites the
+existing journal.
 
 Public observer boundaries:
 
@@ -220,13 +225,22 @@ Safe observation actions:
 data even while global dry-run is enabled. Start, stop, and poll-once remain
 dry-run previews.
 
-`browser_watch_events` supports AND-combined `profile`, `source`, `event_type`,
-`url`, `domain`, `from`, `to`, `limit`, and exclusive `after_event_id` filters.
-The deterministic command syntax uses explicit `key=value` parameters:
+`browser_watch_status` returns structured `active_watches` and
+`completed_watches` arrays plus active/completed counts, valid/legacy/invalid/
+unsupported journal counters, UTC timestamps, last-event fields, suppression
+counts, limits, and sanitized error/stop information. Missing optional watch
+values are returned as `null`.
 
-```text
-покажи події спостереження profile=text_appeared event_type=text_appeared domain=example.com limit=10
-```
+`browser_watch_events` accepts structured `ActionIntent.params`: exact `profile`,
+one or more exact `event_types`, inclusive timezone-aware `since`, exclusive
+timezone-aware `until`, hostname/subdomain `site`, normalized `url_prefix`,
+`limit` from 1 through 100, and the mutually exclusive continuation cursors
+`after_event_id` or one-based JSONL `after_position`. It returns normalized
+events, matched/returned counts, journal diagnostics, `next_position`, and a
+truncation flag. Reading is a single streaming pass with memory bounded by
+`limit`. Natural-language recognition of these filters is not part of this
+contract; see [docs/browser_observer.md](docs/browser_observer.md) for exact
+semantics and structured examples.
 
 Example:
 
