@@ -29,7 +29,7 @@ def render_final_response(
     if status == "blocked_dangerous" or command_result.is_safety_block:
         return "Ні, сер. Це небезпечна дія, я її не виконуватиму."
 
-    if status == "invalid_params" and action == "browser_watch_events":
+    if status == "invalid_params" and action.startswith("browser_watch_"):
         return sanitize_text(command_result.message)
 
     minecraft_response = _render_minecraft(action, command_result)
@@ -88,6 +88,16 @@ def render_final_response(
         )
 
     if status == "ambiguous":
+        if action == "browser_watch_stop" and reason_code == "browser_watch_stop_ambiguous":
+            data = command_result.data if isinstance(command_result.data, dict) else {}
+            candidates = data.get("candidates")
+            values = [
+                sanitize_text(item.get("watch_id"))
+                for item in candidates
+                if isinstance(item, dict) and item.get("watch_id")
+            ] if isinstance(candidates, list) else []
+            suffix = f" Активні watch_id: {', '.join(values)}." if values else ""
+            return f"Уточни, яке спостереження зупинити, сер.{suffix}"
         return "Не до кінця зрозумів дію, сер. Нічого не виконував."
 
     if status == "already_running" and action.startswith("browser_watch_"):

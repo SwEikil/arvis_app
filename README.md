@@ -195,6 +195,12 @@ Debug files are written under `.runtime/browser_debug/`.
 
 Browser Observation Core is the public-safe observer path. It observes only: visible browser viewport, DOM/text signals from a provided Playwright-like page, structured events, JSONL logs, and user-facing notifications. Private local extensions may subscribe to those events, but hands/actions stay outside the public repo.
 
+Its public contract is:
+
+```text
+observe → detect → emit structured event → log/notify
+```
+
 The versioned JSONL schema, compatibility rules, URL sanitization, structured
 status, and event filters are documented in
 [`docs/browser_observer.md`](docs/browser_observer.md).
@@ -215,11 +221,11 @@ Public observer boundaries:
 
 Safe observation actions:
 
-- `browser_watch_start`, target `<profile_name>`
-- `browser_watch_stop`, target `<profile_name>`
-- `browser_watch_status`
-- `browser_watch_events`
-- `browser_watch_poll_once`, target `<profile_name>`
+- `browser_watch_start`, target `<profile_name>`: preview or start a configured background watch.
+- `browser_watch_stop`, target `<profile_name>`: preview or stop the selected watch.
+- `browser_watch_status`: return structured active/completed watch state and journal diagnostics.
+- `browser_watch_events`: read normalized events using the supported structured filters.
+- `browser_watch_poll_once`, target `<profile_name>`: preview or perform one observation poll.
 
 `browser_watch_status` and `browser_watch_events` are read-only and return real
 data even while global dry-run is enabled. Start, stop, and poll-once remain
@@ -238,15 +244,37 @@ timezone-aware `until`, hostname/subdomain `site`, normalized `url_prefix`,
 `after_event_id` or one-based JSONL `after_position`. It returns normalized
 events, matched/returned counts, journal diagnostics, `next_position`, and a
 truncation flag. Reading is a single streaming pass with memory bounded by
-`limit`. Natural-language recognition of these filters is not part of this
-contract; see [docs/browser_observer.md](docs/browser_observer.md) for exact
-semantics and structured examples.
+`limit`.
 
-Example:
+The normal chat/voice resolver recognizes bounded Russian, Ukrainian, and English
+observer phrases for start, stop, status, events, and poll-once. It can preserve
+structured event filters such as `profile`, one or more `event_types`, `site`,
+`url_prefix`, `limit`, `after_event_id`, `after_position`, and explicit ISO 8601
+`since`/`until` values. Filters may be combined, for example:
+
+```text
+покажи последние 10 событий профиля observer
+покажи page_changed с example.com
+покажи события после 00000000-0000-4000-8000-000000000001 для профиля observer
+```
+
+The resolver does not invent profiles, URLs, watch IDs, or timezones. Start and
+poll-once without a configured profile return a structured error. Stop without a
+target is selected automatically only when exactly one watch is active; multiple
+watches return sanitized candidates for clarification. A plain request to open
+or use a browser remains an app/browser command, not an observer command.
+
+More examples:
 
 ```text
 перевір профіль спостереження text_appeared
+покажи статус наблюдателя
+show last browser watch events
 ```
+
+See [docs/browser_observer.md](docs/browser_observer.md) for exact filter
+semantics, supported phrase boundaries, ambiguity handling, and structured
+examples.
 
 v0.2 can run `browser_watch_poll_once` through a controlled Playwright Chromium page provider. The provider opens only `start_url` from the selected profile, and `start_url` must be inside `url_allowlist`. Profiles still come from config files; natural language cannot provide arbitrary URLs.
 

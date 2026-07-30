@@ -291,6 +291,35 @@ class BrowserObserverLogTests(unittest.TestCase):
 
         self.assertEqual([event["event_id"] for event in result.events], ["event-1", "event-2"])
 
+    def test_since_and_until_filters_work_independently(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "events.jsonl"
+            _write_rows(path, [_event(index) for index in range(4)])
+
+            since_only = read_event_log(
+                path,
+                EventQuery(
+                    since=datetime(2026, 7, 23, 10, 0, 2, tzinfo=timezone.utc),
+                    limit=10,
+                ),
+            )
+            until_only = read_event_log(
+                path,
+                EventQuery(
+                    until=datetime(2026, 7, 23, 10, 0, 2, tzinfo=timezone.utc),
+                    limit=10,
+                ),
+            )
+
+        self.assertEqual(
+            [event["event_id"] for event in since_only.events],
+            ["event-2", "event-3"],
+        )
+        self.assertEqual(
+            [event["event_id"] for event in until_only.events],
+            ["event-0", "event-1"],
+        )
+
     def test_site_matches_hostname_and_subdomains_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "events.jsonl"
@@ -544,6 +573,24 @@ class BrowserObserverLogTests(unittest.TestCase):
         self.assertEqual(len(large.events), 7)
         self.assertEqual(large.events[0]["event_id"], "event-4993")
 
+    def test_present_empty_log_and_blank_line_are_counted_correctly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "events.jsonl"
+            path.touch()
+            empty = read_event_log(path)
+
+            path.write_text("\n" + json.dumps(_event(1)) + "\n", encoding="utf-8")
+            with_blank = read_event_log(path)
+
+        self.assertEqual(empty.events, [])
+        self.assertEqual(empty.valid_events_count, 0)
+        self.assertEqual(empty.invalid_events_count, 0)
+        self.assertEqual(empty.next_position, 0)
+        self.assertEqual([event["event_id"] for event in with_blank.events], ["event-1"])
+        self.assertEqual(with_blank.valid_events_count, 1)
+        self.assertEqual(with_blank.invalid_events_count, 1)
+        self.assertEqual(with_blank.next_position, 2)
+
     def test_reader_iterates_stream_without_read_or_readlines(self) -> None:
         class IterationOnlyLog:
             def __enter__(self):
@@ -608,6 +655,16 @@ class BrowserObserverLogTests(unittest.TestCase):
             },
         )
         self.assertNotIn("secret", json.dumps(query.as_dict()))
+
+    def test_limit_accepts_documented_integer_endpoints(self) -> None:
+        for value in (1, 100):
+            with self.subTest(value=value):
+                query, error = parse_event_query({"limit": value}, "observer")
+
+                self.assertIsNone(error)
+                self.assertIsNotNone(query)
+                assert query is not None
+                self.assertEqual(query.limit, value)
 
     def test_all_invalid_filters_are_rejected_without_echoing_credentials(self) -> None:
         for params in (

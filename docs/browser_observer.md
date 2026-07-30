@@ -3,7 +3,12 @@
 Browser Observer is the public observation-only browser subsystem. It may inspect
 configured pages, detect reviewed signals, write events, report status, and notify
 the user. It does not click, type, submit forms, navigate arbitrary URLs, attach to
-an existing browser profile, or perform gameplay/reward automation.
+an existing browser profile, or perform anti-idle/gameplay/reward automation. Its
+public boundary is:
+
+```text
+observe → detect → emit structured event → log/notify
+```
 
 ## Event log
 
@@ -16,8 +21,8 @@ Each line is one independent JSON object.
 | Field | Required | Type | Contract |
 | --- | --- | --- | --- |
 | `schema_version` | yes | integer | Exactly `1`. |
-| `event_id` | yes | string | UUID generated for the event by the writer. |
-| `watch_id` | yes | string | Non-empty watcher identifier. |
+| `event_id` | yes | string | Unique UUID generated for this event record by the writer. |
+| `watch_id` | yes | string | Non-empty identifier associating the event with its configured watch. |
 | `timestamp` | yes | string | Timezone-aware ISO 8601 normalized to UTC. |
 | `event_type` | yes | string | Non-empty type; unknown types remain valid. |
 | `source` | yes | string | Producer, normally `browser_observer`, `poll_once`, or `background_watch`. |
@@ -126,8 +131,9 @@ oldest-to-newest chronological order. `since` must be strictly earlier than
 `after_position` are mutually exclusive. Unknown filter names are rejected.
 
 A non-`observer` action target continues to act as the exact `profile` filter.
-Stage 4 defines structured `ActionIntent.params`; recognizing natural-language
-filter phrases is intentionally outside this contract.
+The resolver recognizes an unambiguous subset of these filters from normal chat
+or normalized voice text and keeps them as typed `ActionIntent.params`; the
+events reader remains the canonical validator.
 
 Example structured filters:
 
@@ -184,6 +190,65 @@ Event data and filter values are privacy-cleaned again before return. URLs lose
 userinfo, fragments, and sensitive query values; nested event secrets are
 redacted. Validation errors do not echo raw URL filters or credential-like
 cursors.
+
+## Natural-language resolver integration
+
+The deterministic resolver recognizes Browser Observer requests only when they
+contain an observation-specific intent. The word `browser` or `браузер` alone
+does not select Browser Observer and does not replace existing app/site launch or
+controlled-browser commands.
+
+Supported examples include:
+
+```text
+начни наблюдать за браузером
+запусти наблюдение за страницей profile text_appeared
+останови наблюдение text_appeared
+покажи статус наблюдателя
+какие наблюдения сейчас активны
+покажи завершённые наблюдения
+покажи последние события браузера
+покажи последние 10 событий профиля observer
+покажи события типов page_changed и text_appeared
+покажи page_changed с example.com
+покажи события после 00000000-0000-4000-8000-000000000001 для профиля observer
+покажи события после позиции 41
+проверь профиль наблюдения text_appeared один раз
+```
+
+Equivalent short Ukrainian and English observer phrases already used by the
+resolver are supported as well. This is intentionally a bounded command grammar,
+not a general date or natural-language query parser. Explicit `key=value` filters
+may be combined using the names listed above. Unknown filter names are preserved
+until the events handler rejects them instead of being silently discarded.
+
+The resolver preserves `event_types` as an array and recognized `limit` and
+`after_position` values as JSON integers. Values from the LLM fallback pass
+through the same action and parameter allowlists; unknown Browser Observer
+actions or parameters are not routed. A JSON boolean is never converted into an
+integer and is rejected by the canonical filter validation.
+
+Absolute time is recognized only in ISO 8601 form. The resolver never invents a
+timezone: a timestamp without an offset is passed unchanged to the events
+handler, which returns the existing timezone-required validation error. Relative
+dates and conversational calendar expressions are not interpreted.
+
+Start and poll-once require a configured profile. The resolver leaves the target
+empty when the user did not provide one, and the router returns a structured
+`browser_watch_target_required` error instead of inventing a profile or URL.
+Stop without a target selects a watch only when status reports exactly one active
+watch. With no active watch it returns the same required-target error; with
+multiple active watches it returns `browser_watch_stop_ambiguous` and sanitized
+`watch_id`/`profile` candidates in `CommandResult.data`.
+
+Structured parameters are never encoded as display text:
+
+```json
+{"action":"browser_watch_events","target":"observer","params":{"profile":"observer","event_types":["page_changed"],"site":"example.com","limit":10}}
+```
+
+Filter values, resolver reasons, Browser Observer targets, stored source text,
+structured errors, and renderer output use the existing privacy sanitizer.
 
 ## Status and dry-run
 

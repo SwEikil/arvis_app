@@ -7,6 +7,7 @@ from actions.apps import execute_app_action, normalize_target, preview_app_actio
 from actions.browser_agent import execute_browser_task, preview_browser_task
 from actions.browser_agent import normalize_browser_task_target
 from actions.browser_observer import normalize_browser_watch_profile_name
+from actions.browser_observer_log import sanitize_text
 from actions.browser_watch_manager import execute_browser_watch_action
 from actions.browser_watch_manager import preview_browser_watch_action
 from actions.browser_watch_manager import read_browser_watch_action
@@ -43,7 +44,12 @@ class CommandRouter:
         self.dry_run = dry_run
 
     def route(self, intent: ActionIntent, user_text: str | None = None) -> CommandResult:
-        action, target = normalize_action(intent.action, intent.target, user_text=user_text)
+        route_target = intent.target
+        if _normalize_action_name(intent.action) in BROWSER_WATCH_ACTIONS:
+            route_target = sanitize_text(route_target or "")
+        action, target = normalize_action(intent.action, route_target, user_text=user_text)
+        if action in BROWSER_WATCH_ACTIONS:
+            target = normalize_browser_watch_profile_name(sanitize_text(target or ""))
         params = normalize_params(action, getattr(intent, "params", {}), user_text)
         volume_direction_source = _volume_direction_source(intent.action, intent.target, user_text, action)
         risk = (intent.risk or "").strip().lower()
@@ -61,9 +67,9 @@ class CommandRouter:
                 is_safety_block=True,
                 original_action=intent.action,
                 normalized_action=action,
-                original_target=intent.target,
+                original_target=_stored_target(action, intent.target),
                 normalized_target=target,
-                original_user_text=user_text,
+                original_user_text=_stored_user_text(action, user_text),
                 params=params,
             )
 
@@ -78,9 +84,9 @@ class CommandRouter:
                 is_safety_block=True,
                 original_action=intent.action,
                 normalized_action=action,
-                original_target=intent.target,
+                original_target=_stored_target(action, intent.target),
                 normalized_target=target,
-                original_user_text=user_text,
+                original_user_text=_stored_user_text(action, user_text),
                 params=params,
             )
 
@@ -95,9 +101,9 @@ class CommandRouter:
                 is_safety_block=True,
                 original_action=intent.action,
                 normalized_action=action,
-                original_target=intent.target,
+                original_target=_stored_target(action, intent.target),
                 normalized_target=target,
-                original_user_text=user_text,
+                original_user_text=_stored_user_text(action, user_text),
                 params=params,
             )
 
@@ -154,6 +160,46 @@ class CommandRouter:
             )
 
         if action in BROWSER_WATCH_ACTIONS:
+            if action == "browser_watch_stop" and not target:
+                status_result = read_browser_watch_action("browser_watch_status", "observer", {})
+                active_watches = status_result.data.get("active_watches") if isinstance(status_result.data, dict) else None
+                candidates = _browser_watch_candidates(active_watches)
+                if len(candidates) == 1:
+                    target = str(candidates[0]["watch_id"])
+                elif len(candidates) > 1:
+                    return self._browser_watch_target_error(
+                        action,
+                        target,
+                        intent,
+                        user_text,
+                        params,
+                        status="ambiguous",
+                        reason_code="browser_watch_stop_ambiguous",
+                        message="Уточни watch_id: активних спостережень кілька, сер.",
+                        candidates=candidates,
+                    )
+                else:
+                    return self._browser_watch_target_error(
+                        action,
+                        target,
+                        intent,
+                        user_text,
+                        params,
+                        status="invalid_params",
+                        reason_code="browser_watch_target_required",
+                        message="Немає активного спостереження; укажи watch_id або profile, сер.",
+                    )
+            elif action in BROWSER_WATCH_TARGET_ACTIONS and not target:
+                return self._browser_watch_target_error(
+                    action,
+                    target,
+                    intent,
+                    user_text,
+                    params,
+                    status="invalid_params",
+                    reason_code="browser_watch_target_required",
+                    message="Укажи налаштований profile для Browser Observer, сер.",
+                )
             if action in READ_ONLY_BROWSER_WATCH_ACTIONS:
                 return self._run_browser_watch_read_only(action, target, intent, user_text, params)
             return self._run_or_preview(
@@ -181,9 +227,9 @@ class CommandRouter:
                 reason_code="volume_direction_unknown",
                 original_action=intent.action,
                 normalized_action=action,
-                original_target=intent.target,
+                original_target=_stored_target(action, intent.target),
                 normalized_target=target,
-                original_user_text=user_text,
+                original_user_text=_stored_user_text(action, user_text),
                 params=params,
             )
 
@@ -196,9 +242,9 @@ class CommandRouter:
             reason_code="action_not_whitelisted",
             original_action=intent.action,
             normalized_action=action,
-            original_target=intent.target,
+            original_target=_stored_target(action, intent.target),
             normalized_target=target,
-            original_user_text=user_text,
+            original_user_text=_stored_user_text(action, user_text),
             params=params,
         )
 
@@ -221,11 +267,39 @@ class CommandRouter:
             reason_code=result.reason_code,
             original_action=intent.action,
             normalized_action=action,
-            original_target=intent.target,
+            original_target=_stored_target(action, intent.target),
             normalized_target=target,
-            original_user_text=user_text,
+            original_user_text=_stored_user_text(action, user_text),
             params=params,
             data=result.data,
+        )
+
+    def _browser_watch_target_error(
+        self,
+        action: str,
+        target: str | None,
+        intent: ActionIntent,
+        user_text: str | None,
+        params: dict[str, object],
+        *,
+        status: str,
+        reason_code: str,
+        message: str,
+        candidates: list[dict[str, str]] | None = None,
+    ) -> CommandResult:
+        return CommandResult(
+            executed=False,
+            action=action,
+            status=status,
+            message=message,
+            reason_code=reason_code,
+            original_action=intent.action,
+            normalized_action=action,
+            original_target=_stored_target(action, intent.target),
+            normalized_target=target,
+            original_user_text=_stored_user_text(action, user_text),
+            params=params,
+            data={"candidates": candidates or []},
         )
 
     def _run_or_preview(
@@ -258,9 +332,9 @@ class CommandRouter:
             is_safety_block=is_safety_block,
             original_action=intent.action,
             normalized_action=action,
-            original_target=intent.target,
+            original_target=_stored_target(action, intent.target),
             normalized_target=target,
-            original_user_text=user_text,
+            original_user_text=_stored_user_text(action, user_text),
             params=params,
         )
 
@@ -284,9 +358,9 @@ class CommandRouter:
             is_safety_block=result.is_safety_block,
             original_action=intent.action,
             normalized_action=action,
-            original_target=intent.target,
+            original_target=_stored_target(action, intent.target),
             normalized_target=minecraft_target,
-            original_user_text=user_text,
+            original_user_text=_stored_user_text(action, user_text),
             params=params,
         )
 
@@ -339,6 +413,12 @@ BROWSER_WATCH_ACTIONS = {
 READ_ONLY_BROWSER_WATCH_ACTIONS = {
     "browser_watch_status",
     "browser_watch_events",
+}
+
+BROWSER_WATCH_TARGET_ACTIONS = {
+    "browser_watch_start",
+    "browser_watch_stop",
+    "browser_watch_poll_once",
 }
 
 BROWSER_ACTION_ALIASES = {
@@ -921,6 +1001,35 @@ def _format_details(
 ) -> str | None:
     parts = [part for part in (details, note) if part]
     return "; ".join(parts) or None
+
+
+def _browser_watch_candidates(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    candidates: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        watch_id = normalize_browser_watch_profile_name(sanitize_text(item.get("watch_id") or ""))
+        profile = normalize_browser_watch_profile_name(sanitize_text(item.get("profile") or ""))
+        if not watch_id:
+            watch_id = profile
+        if not watch_id:
+            continue
+        candidates.append({"watch_id": watch_id, "profile": profile or watch_id})
+    return candidates
+
+
+def _stored_user_text(action: str, value: str | None) -> str | None:
+    if action in BROWSER_WATCH_ACTIONS and value is not None:
+        return sanitize_text(value)
+    return value
+
+
+def _stored_target(action: str, value: str | None) -> str | None:
+    if action in BROWSER_WATCH_ACTIONS and value is not None:
+        return sanitize_text(value)
+    return value
 
 
 def should_try_intent_resolver(result: CommandResult) -> bool:

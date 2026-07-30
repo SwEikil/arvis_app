@@ -151,27 +151,42 @@ class IntentResolverTests(unittest.TestCase):
                 self.assertTrue(should_pass_to_router(resolved))
 
     def test_browser_watch_status_phrase(self) -> None:
-        resolved = self.resolver.resolve("статус спостереження", use_llm=False)
+        for phrase in (
+            "статус спостереження",
+            "покажи статус наблюдателя",
+            "какие наблюдения сейчас активны",
+            "покажи завершённые наблюдения",
+            "browser watch status",
+        ):
+            with self.subTest(phrase=phrase):
+                resolved = self.resolver.resolve(phrase, use_llm=False)
 
-        self.assertEqual(resolved.action, "browser_watch_status")
-        self.assertEqual(resolved.target, "observer")
-        self.assertEqual(resolved.risk, "safe")
-        self.assertTrue(should_pass_to_router(resolved))
+                self.assertEqual(resolved.action, "browser_watch_status")
+                self.assertEqual(resolved.target, "observer")
+                self.assertEqual(resolved.risk, "safe")
+                self.assertTrue(should_pass_to_router(resolved))
 
     def test_browser_watch_events_phrase(self) -> None:
-        resolved = self.resolver.resolve("покажи події спостереження", use_llm=False)
+        for phrase in (
+            "покажи події спостереження",
+            "покажи последние события браузера",
+            "show last browser watch events",
+        ):
+            with self.subTest(phrase=phrase):
+                resolved = self.resolver.resolve(phrase, use_llm=False)
 
-        self.assertEqual(resolved.action, "browser_watch_events")
-        self.assertEqual(resolved.target, "observer")
-        self.assertEqual(resolved.risk, "safe")
-        self.assertTrue(should_pass_to_router(resolved))
+                self.assertEqual(resolved.action, "browser_watch_events")
+                self.assertEqual(resolved.target, "observer")
+                self.assertEqual(resolved.risk, "safe")
+                self.assertTrue(should_pass_to_router(resolved))
 
     def test_browser_watch_events_preserves_explicit_filters(self) -> None:
         resolved = self.resolver.resolve(
             "покажи події спостереження "
-            "profile=text_appeared source=background_watch event_type=text_appeared "
-            "domain=example.com from=2026-07-23T10:00:00Z to=2026-07-23T11:00:00+00:00 "
-            "limit=10 after_event_id=event-1",
+            "profile=text_appeared event_types=text_appeared,page_changed "
+            "site=example.com url_prefix=https://example.com/page?token=secret&view=ok "
+            "since=2026-07-23T10:00:00Z until=2026-07-23T11:00:00+00:00 "
+            "limit=10 after_position=4",
             use_llm=False,
         )
 
@@ -180,24 +195,90 @@ class IntentResolverTests(unittest.TestCase):
             resolved.params,
             {
                 "profile": "text_appeared",
-                "source": "background_watch",
-                "event_type": "text_appeared",
-                "domain": "example.com",
-                "from": "2026-07-23T10:00:00Z",
-                "to": "2026-07-23T11:00:00+00:00",
+                "event_types": ["text_appeared", "page_changed"],
+                "site": "example.com",
+                "url_prefix": "https://example.com/page?token=REDACTED&view=ok",
+                "since": "2026-07-23T10:00:00Z",
+                "until": "2026-07-23T11:00:00+00:00",
                 "limit": 10,
-                "after_event_id": "event-1",
+                "after_position": 4,
             },
         )
+        self.assertNotIn("secret", json.dumps(resolved.params))
 
     def test_browser_watch_events_russian_phrase(self) -> None:
         resolved = self.resolver.resolve(
-            "покажи события наблюдения profile=text_appeared limit=2",
+            "покажи последние 10 событий профиля observer",
             use_llm=False,
         )
 
         self.assertEqual(resolved.action, "browser_watch_events")
-        self.assertEqual(resolved.params, {"profile": "text_appeared", "limit": 2})
+        self.assertEqual(resolved.params, {"profile": "observer", "limit": 10})
+
+    def test_browser_watch_events_extracts_natural_filters_and_preserves_types(self) -> None:
+        cases = (
+            (
+                "покажи события типа page_changed",
+                {"event_types": ["page_changed"]},
+            ),
+            (
+                "покажи события типов page_changed и text_appeared",
+                {"event_types": ["page_changed", "text_appeared"]},
+            ),
+            (
+                "покажи page_changed с example.com",
+                {"event_types": ["page_changed"], "site": "example.com"},
+            ),
+            (
+                "покажи события после event-7 для профиля observer",
+                {"profile": "observer", "after_event_id": "event-7"},
+            ),
+            (
+                "покажи события после позиции 12",
+                {"after_position": 12},
+            ),
+        )
+
+        for phrase, expected in cases:
+            with self.subTest(phrase=phrase):
+                resolved = self.resolver.resolve(phrase, use_llm=False)
+
+                self.assertEqual(resolved.action, "browser_watch_events")
+                self.assertEqual(resolved.params, expected)
+
+    def test_browser_watch_events_preserves_timezone_and_naive_time_for_validation(self) -> None:
+        aware = self.resolver.resolve(
+            "покажи события с 2026-07-23T10:00:00+02:00 до 2026-07-23T11:00:00Z",
+            use_llm=False,
+        )
+        naive = self.resolver.resolve(
+            "покажи события с 2026-07-23T10:00:00",
+            use_llm=False,
+        )
+
+        self.assertEqual(
+            aware.params,
+            {
+                "since": "2026-07-23T10:00:00+02:00",
+                "until": "2026-07-23T11:00:00Z",
+            },
+        )
+        self.assertEqual(naive.params, {"since": "2026-07-23T10:00:00"})
+
+    def test_browser_watch_events_redacts_natural_url_filter(self) -> None:
+        resolved = self.resolver.resolve(
+            "покажи события по url "
+            "https://user:url-password@example.com/page?token=url-token&view=ok",
+            use_llm=False,
+        )
+
+        self.assertEqual(resolved.action, "browser_watch_events")
+        self.assertEqual(
+            resolved.params["url_prefix"],
+            "https://example.com/page?token=REDACTED&view=ok",
+        )
+        self.assertNotIn("url-password", json.dumps(resolved.params))
+        self.assertNotIn("url-token", json.dumps(resolved.params))
 
     def test_browser_watch_poll_profile_phrase(self) -> None:
         resolved = self.resolver.resolve("перевір профіль спостереження viewport_change_full", use_llm=False)
@@ -216,7 +297,11 @@ class IntentResolverTests(unittest.TestCase):
         self.assertTrue(should_pass_to_router(resolved))
 
     def test_browser_watch_start_phrases(self) -> None:
-        for phrase in ["стеж за профілем text_appeared", "запусти спостереження text_appeared"]:
+        for phrase in [
+            "стеж за профілем text_appeared",
+            "запусти спостереження text_appeared",
+            "start browser observation profile text_appeared",
+        ]:
             with self.subTest(phrase=phrase):
                 resolved = self.resolver.resolve(phrase, use_llm=False)
 
@@ -226,7 +311,12 @@ class IntentResolverTests(unittest.TestCase):
                 self.assertTrue(should_pass_to_router(resolved))
 
     def test_browser_watch_stop_phrases(self) -> None:
-        for phrase in ["зупини спостереження text_appeared", "зупини watcher text_appeared"]:
+        for phrase in [
+            "зупини спостереження text_appeared",
+            "зупини watcher text_appeared",
+            "останови наблюдение text_appeared",
+            "stop browser watch text_appeared",
+        ]:
             with self.subTest(phrase=phrase):
                 resolved = self.resolver.resolve(phrase, use_llm=False)
 
@@ -234,6 +324,30 @@ class IntentResolverTests(unittest.TestCase):
                 self.assertEqual(resolved.target, "text_appeared")
                 self.assertEqual(resolved.risk, "safe")
                 self.assertTrue(should_pass_to_router(resolved))
+
+    def test_browser_watch_missing_profile_is_preserved_as_missing(self) -> None:
+        cases = {
+            "начни наблюдать за браузером": "browser_watch_start",
+            "запусти наблюдение за страницей": "browser_watch_start",
+            "останови наблюдение": "browser_watch_stop",
+            "проверь страницу один раз": "browser_watch_poll_once",
+        }
+
+        for phrase, action in cases.items():
+            with self.subTest(phrase=phrase):
+                resolved = self.resolver.resolve(phrase, use_llm=False)
+
+                self.assertEqual(resolved.action, action)
+                self.assertEqual(resolved.target, "")
+                self.assertTrue(should_pass_to_router(resolved))
+
+    def test_browser_word_alone_does_not_trigger_observer(self) -> None:
+        opened = self.resolver.resolve("відкрий браузер", use_llm=False)
+        casual = self.resolver.resolve("я использую браузер каждый день", use_llm=False)
+
+        self.assertEqual(opened.action, "open_app")
+        self.assertEqual(opened.target, "brave")
+        self.assertIsNone(casual.action)
 
     def test_minecraft_server(self) -> None:
         resolved = self.resolver.resolve("Підніми майн сервер", use_llm=False)
@@ -721,6 +835,90 @@ class IntentResolverTests(unittest.TestCase):
         self.assertEqual(resolved.action, "volume_down")
         self.assertEqual(resolved.risk, "safe")
         self.assertTrue(should_pass_to_router(resolved))
+
+    def test_llm_browser_event_params_preserve_structured_types(self) -> None:
+        resolver = IntentResolver(
+            FakeLlmClient(
+                json.dumps(
+                    {
+                        "action": "browser_watch_events",
+                        "target": "observer",
+                        "risk": "safe",
+                        "need_confirmation": False,
+                        "confidence": 0.9,
+                        "params": {
+                            "profile": "observer",
+                            "event_types": ["page_changed", "custom_event"],
+                            "limit": 10,
+                            "after_position": 4,
+                        },
+                    }
+                )
+            )
+        )
+
+        resolved = resolver.resolve("покажи observer журнал", use_llm=True)
+
+        self.assertEqual(resolved.action, "browser_watch_events")
+        self.assertEqual(resolved.params["event_types"], ["page_changed", "custom_event"])
+        self.assertIsInstance(resolved.params["event_types"], list)
+        self.assertIsInstance(resolved.params["limit"], int)
+        self.assertIsInstance(resolved.params["after_position"], int)
+
+    def test_llm_browser_boolean_integer_filter_is_not_coerced(self) -> None:
+        resolver = IntentResolver(
+            FakeLlmClient(
+                '{"action":"browser_watch_events","target":"observer","risk":"safe",'
+                '"need_confirmation":false,"confidence":0.9,"params":{"limit":true}}'
+            )
+        )
+
+        resolved = resolver.resolve("покажи observer журнал", use_llm=True)
+
+        self.assertEqual(resolved.action, "browser_watch_events")
+        self.assertIs(resolved.params["limit"], True)
+
+    def test_llm_unknown_browser_action_or_parameter_does_not_route(self) -> None:
+        responses = (
+            '{"action":"browser_watch_click","target":"observer","risk":"safe",'
+            '"need_confirmation":false,"confidence":0.9}',
+            '{"action":"browser_watch_events","target":"observer","risk":"safe",'
+            '"need_confirmation":false,"confidence":0.9,"params":{"click":true}}',
+        )
+
+        for response in responses:
+            with self.subTest(response=response):
+                resolved = IntentResolver(FakeLlmClient(response)).resolve(
+                    "покажи observer журнал",
+                    use_llm=True,
+                )
+
+                self.assertIsNone(resolved.action)
+                self.assertFalse(should_pass_to_router(resolved))
+
+    def test_llm_browser_filter_credentials_are_redacted(self) -> None:
+        resolver = IntentResolver(
+            FakeLlmClient(
+                '{"action":"browser_watch_events","target":"observer","risk":"safe",'
+                '"need_confirmation":false,"confidence":0.9,'
+                '"reason":"Authorization: Bearer llm-reason-secret",'
+                '"params":{"url_prefix":"https://user:pass@example.com/?token=llm-secret&view=ok"}}'
+            )
+        )
+
+        resolved = resolver.resolve("покажи observer журнал", use_llm=True)
+
+        serialized = json.dumps(
+            {
+                "reason": resolved.reason,
+                "params": resolved.params,
+            }
+        )
+        self.assertNotIn("llm-secret", serialized)
+        self.assertNotIn("llm-reason-secret", serialized)
+        self.assertNotIn("user:pass", serialized)
+        self.assertIn("Authorization: REDACTED", serialized)
+        self.assertIn("view=ok", serialized)
 
 
 if __name__ == "__main__":

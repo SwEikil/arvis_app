@@ -543,6 +543,36 @@ class ResponseRendererTests(unittest.TestCase):
         self.assertIn("REDACTED", rendered)
         self.assertNotIn("renderer-filter-secret", rendered)
 
+    def test_browser_watch_missing_profile_and_ambiguous_stop_are_clear(self) -> None:
+        missing = self._result(
+            action="browser_watch_start",
+            status="invalid_params",
+            reason_code="browser_watch_target_required",
+            message="Укажи налаштований profile для Browser Observer, сер.",
+            data={"candidates": []},
+        )
+        ambiguous = self._result(
+            action="browser_watch_stop",
+            status="ambiguous",
+            reason_code="browser_watch_stop_ambiguous",
+            message="Уточни watch_id.",
+            data={
+                "candidates": [
+                    {"watch_id": "one", "profile": "one"},
+                    {"watch_id": "Authorization: Bearer renderer-candidate-secret", "profile": "two"},
+                ]
+            },
+        )
+
+        missing_rendered = render_final_response("", missing)
+        ambiguous_rendered = render_final_response("", ambiguous)
+
+        self.assertIn("Укажи", missing_rendered)
+        self.assertIn("яке спостереження зупинити", ambiguous_rendered)
+        self.assertIn("one", ambiguous_rendered)
+        self.assertIn("REDACTED", ambiguous_rendered)
+        self.assertNotIn("renderer-candidate-secret", ambiguous_rendered)
+
     def test_browser_watch_missing_start_url_response(self) -> None:
         result = self._result(
             action="browser_watch_poll_once",

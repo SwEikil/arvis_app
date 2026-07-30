@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 from unittest.mock import patch
 
+from actions.browser_watch_manager import BrowserWatchManager
 from actions.browser_watch_manager import WatchManagerResult
 from actions.media import execute_media_action
 from actions.volume import execute_volume_action
@@ -11,6 +15,7 @@ from command_router import CommandRouter
 from intent_resolver import IntentResolver
 from intent_resolver import should_pass_to_router
 from main import should_try_resolver_for_result
+from response_renderer import render_final_response
 from schemas import ActionIntent
 
 
@@ -228,6 +233,112 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
         self.assertEqual(result.status, "dry_run")
         execute.assert_not_called()
 
+    def test_browser_watch_action_without_required_profile_is_structured_error(self) -> None:
+        for action in ("browser_watch_start", "browser_watch_poll_once"):
+            with self.subTest(action=action):
+                result = CommandRouter(dry_run=True).route(
+                    ActionIntent(
+                        action=action,
+                        target="",
+                        risk="safe",
+                        need_confirmation=False,
+                    ),
+                    user_text="проверь страницу один раз",
+                )
+
+                self.assertFalse(result.executed)
+                self.assertEqual(result.status, "invalid_params")
+                self.assertEqual(result.reason_code, "browser_watch_target_required")
+                self.assertEqual(result.data, {"candidates": []})
+
+    def test_browser_watch_stop_without_target_selects_only_active_watch(self) -> None:
+        status = WatchManagerResult(
+            status="status",
+            reason_code=None,
+            message="Browser watch status.",
+            executed=True,
+            data={
+                "active_watches": [
+                    {"watch_id": "text_appeared", "profile": "text_appeared"},
+                ]
+            },
+        )
+        with patch("command_router.read_browser_watch_action", return_value=status) as read_only:
+            result = CommandRouter(dry_run=True).route(
+                ActionIntent(
+                    action="browser_watch_stop",
+                    target="",
+                    risk="safe",
+                    need_confirmation=False,
+                ),
+                user_text="останови наблюдение",
+            )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "dry_run")
+        self.assertEqual(result.normalized_target, "text_appeared")
+        read_only.assert_called_once_with("browser_watch_status", "observer", {})
+
+    def test_browser_watch_stop_without_target_is_ambiguous_for_multiple_watches(self) -> None:
+        status = WatchManagerResult(
+            status="status",
+            reason_code=None,
+            message="Browser watch status.",
+            executed=True,
+            data={
+                "active_watches": [
+                    {"watch_id": "one", "profile": "one"},
+                    {
+                        "watch_id": "Authorization: Bearer candidate-secret",
+                        "profile": "two",
+                    },
+                ]
+            },
+        )
+        with (
+            patch("command_router.read_browser_watch_action", return_value=status),
+            patch("command_router.execute_browser_watch_action") as execute,
+        ):
+            result = CommandRouter(dry_run=True).route(
+                ActionIntent(
+                    action="browser_watch_stop",
+                    target="",
+                    risk="safe",
+                    need_confirmation=False,
+                ),
+                user_text="останови наблюдение",
+            )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "ambiguous")
+        self.assertEqual(result.reason_code, "browser_watch_stop_ambiguous")
+        self.assertEqual(len(result.data["candidates"]), 2)
+        self.assertNotIn("candidate-secret", str(result.data))
+        execute.assert_not_called()
+
+    def test_browser_watch_stop_without_target_and_no_active_watch_is_invalid(self) -> None:
+        status = WatchManagerResult(
+            status="status",
+            reason_code=None,
+            message="Browser watch status.",
+            executed=True,
+            data={"active_watches": []},
+        )
+        with patch("command_router.read_browser_watch_action", return_value=status):
+            result = CommandRouter(dry_run=False).route(
+                ActionIntent(
+                    action="browser_watch_stop",
+                    target="",
+                    risk="safe",
+                    need_confirmation=False,
+                ),
+                user_text="останови наблюдение",
+            )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "invalid_params")
+        self.assertEqual(result.reason_code, "browser_watch_target_required")
+
     def test_browser_watch_start_execution_uses_manager(self) -> None:
         with patch(
             "command_router.execute_browser_watch_action",
@@ -413,6 +524,198 @@ class CommandRouterVolumeNormalizationTests(unittest.TestCase):
         self.assertFalse(result.executed)
         self.assertEqual(result.status, "invalid_params")
         self.assertIn("Limit має бути від 1 до 100", result.message)
+
+    def test_browser_watch_events_boolean_limit_from_resolver_reaches_validation(self) -> None:
+        resolved = IntentResolver(
+            type(
+                "FakeLlm",
+                (),
+                {
+                    "chat": lambda self, messages: (
+                        '{"action":"browser_watch_events","target":"observer","risk":"safe",'
+                        '"need_confirmation":false,"confidence":0.9,"params":{"limit":true}}',
+                        None,
+                    )
+                },
+            )()
+        ).resolve("покажи observer журнал", use_llm=True)
+        intent = resolved.to_action_intent()
+        assert intent is not None
+
+        result = CommandRouter(dry_run=True).route(intent, user_text="покажи observer журнал")
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "invalid_params")
+        self.assertIn("цілим числом", result.message)
+        self.assertIs(result.params["limit"], True)
+
+    def test_browser_watch_events_naive_time_from_resolver_reaches_validation(self) -> None:
+        resolved = IntentResolver().resolve(
+            "покажи события с 2026-07-23T10:00:00",
+            use_llm=False,
+        )
+        intent = resolved.to_action_intent()
+        assert intent is not None
+
+        result = CommandRouter(dry_run=True).route(
+            intent,
+            user_text="покажи события с 2026-07-23T10:00:00",
+        )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "invalid_params")
+        self.assertIn("timezone", result.message)
+
+    def test_browser_watch_events_malformed_time_from_resolver_reaches_validation(self) -> None:
+        resolved = IntentResolver().resolve(
+            "покажи события since=not-a-time",
+            use_llm=False,
+        )
+        intent = resolved.to_action_intent()
+        assert intent is not None
+
+        result = CommandRouter(dry_run=True).route(
+            intent,
+            user_text="покажи события since=not-a-time",
+        )
+
+        self.assertEqual(resolved.params, {"since": "not-a-time"})
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "invalid_params")
+        self.assertIn("ISO 8601", result.message)
+
+    def test_browser_watch_events_unknown_natural_filter_is_not_silently_dropped(self) -> None:
+        resolved = IntentResolver().resolve(
+            "покажи события unknown_filter=value",
+            use_llm=False,
+        )
+        intent = resolved.to_action_intent()
+        assert intent is not None
+
+        result = CommandRouter(dry_run=True).route(intent, user_text="покажи события")
+
+        self.assertEqual(resolved.params, {"unknown_filter": "value"})
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "invalid_params")
+        self.assertIn("невідомий фільтр", result.message)
+
+    def test_browser_watch_event_credentials_are_not_stored_in_command_result(self) -> None:
+        user_text = (
+            "покажи события "
+            "url_prefix=https://user:password@example.com/page?token=router-secret&view=ok "
+            "limit=true"
+        )
+        resolved = IntentResolver().resolve(user_text, use_llm=False)
+        intent = resolved.to_action_intent()
+        assert intent is not None
+
+        result = CommandRouter(dry_run=True).route(intent, user_text=user_text)
+
+        serialized = str(
+            {
+                "params": result.params,
+                "original_target": result.original_target,
+                "normalized_target": result.normalized_target,
+                "original_user_text": result.original_user_text,
+                "message": result.message,
+                "data": result.data,
+            }
+        )
+        self.assertFalse(result.executed)
+        self.assertEqual(result.status, "invalid_params")
+        self.assertIn("view=ok", serialized)
+        self.assertNotIn("router-secret", serialized)
+        self.assertNotIn("user:password", serialized)
+
+    def test_browser_watch_target_is_sanitized_before_normalization(self) -> None:
+        secret = "direct-target-secret"
+        result = CommandRouter(dry_run=True).route(
+            ActionIntent(
+                action="browser_watch_start",
+                target=f"https://user:password@example.com/page?token={secret}&view=ok",
+                risk="safe",
+                need_confirmation=False,
+            ),
+            user_text=(
+                "start browser watch "
+                f"https://user:password@example.com/page?token={secret}&view=ok"
+            ),
+        )
+
+        serialized = str(result)
+        rendered = render_final_response("", result)
+        self.assertFalse(result.executed)
+        self.assertNotIn(secret, serialized)
+        self.assertNotIn(secret, rendered)
+        self.assertNotIn("user:password", serialized)
+        self.assertNotIn("user:password", rendered)
+        self.assertIn("REDACTED", serialized)
+        self.assertIn("redacted", rendered.lower())
+
+    def test_browser_watch_events_command_result_data_is_privacy_cleaned(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".runtime" / "browser_observer" / "events.jsonl"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "event_id": "event-private",
+                        "watch_id": "observer",
+                        "timestamp": "2026-07-23T10:00:00+00:00",
+                        "event_type": "page_changed",
+                        "source": "browser_observer",
+                        "profile": "observer",
+                        "page": {
+                            "url": (
+                                "https://user:password@example.com/page?"
+                                "token=command-result-secret&view=ok"
+                            )
+                        },
+                        "message": "Authorization: Bearer command-message-secret",
+                        "payload": {
+                            "cookie_header": "sid=command-cookie-secret",
+                            "safe": "keep",
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            manager_result = BrowserWatchManager(
+                project_root=tmp,
+                start_threads=False,
+            ).events("observer", {})
+
+            with patch(
+                "command_router.read_browser_watch_action",
+                return_value=manager_result,
+            ):
+                result = CommandRouter(dry_run=True).route(
+                    ActionIntent(
+                        action="browser_watch_events",
+                        target="observer",
+                        risk="safe",
+                        need_confirmation=False,
+                    ),
+                    user_text="покажи последние события браузера",
+                )
+
+        serialized = json.dumps(result.data)
+        rendered = render_final_response("", result)
+        for marker in (
+            "command-result-secret",
+            "command-message-secret",
+            "command-cookie-secret",
+            "user:password",
+        ):
+            with self.subTest(marker=marker):
+                self.assertNotIn(marker, serialized)
+                self.assertNotIn(marker, rendered)
+        self.assertIn("view=ok", serialized)
+        self.assertIn('"safe": "keep"', serialized)
+        self.assertEqual(result.data["events"][0]["message"], "Authorization: REDACTED")
+        self.assertEqual(result.data["events"][0]["payload"]["cookie_header"], "REDACTED")
 
     def test_unknown_browser_watch_profile_is_blocked(self) -> None:
         result = CommandRouter(dry_run=False).route(

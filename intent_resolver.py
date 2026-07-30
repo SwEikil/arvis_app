@@ -7,6 +7,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from actions.apps import normalize_target
+from actions.browser_observer_log import sanitize_event_data
+from actions.browser_observer_log import sanitize_text
+from actions.browser_observer_log import sanitize_url
 from parameter_extraction import extract_first_number
 from parameter_extraction import get_int_param
 from schemas import ActionIntent
@@ -141,6 +144,10 @@ COMMAND_HINTS = {
     "open",
     "start",
     "run",
+    "observe",
+    "watch",
+    "show",
+    "stop",
     "play",
     "pause",
     "mute",
@@ -172,6 +179,12 @@ COMMAND_HINTS = {
     "ram",
     "metrics",
     "performance",
+    "начни",
+    "останови",
+    "проверь",
+    "наблюдение",
+    "наблюдатель",
+    "события",
 }
 
 DANGEROUS_PHRASES = {
@@ -1207,55 +1220,7 @@ def _resolve_browser_task(text: str) -> ResolvedIntent | None:
 
 
 def _resolve_browser_watch(text: str, raw_text: str = "") -> ResolvedIntent | None:
-    start_match = re.search(r"(?:стеж за профілем|запусти спостереження)\s+([a-z0-9_-]+(?:\s+[a-z0-9_-]+)*)", text)
-    if start_match:
-        profile_name = "_".join(start_match.group(1).split())
-        return ResolvedIntent(
-            action="browser_watch_start",
-            target=profile_name,
-            risk="safe",
-            need_confirmation=False,
-            confidence=0.9,
-            source="heuristic_user_text",
-            reason="User text asks to start a configured browser observer profile.",
-            matched="browser_watch_start",
-        )
-
-    stop_match = re.search(r"(?:зупини спостереження|зупини watcher)\s+([a-z0-9_-]+(?:\s+[a-z0-9_-]+)*)", text)
-    if stop_match:
-        profile_name = "_".join(stop_match.group(1).split())
-        return ResolvedIntent(
-            action="browser_watch_stop",
-            target=profile_name,
-            risk="safe",
-            need_confirmation=False,
-            confidence=0.9,
-            source="heuristic_user_text",
-            reason="User text asks to stop a browser observer watch.",
-            matched="browser_watch_stop",
-        )
-
-    if _contains_any(text, {"статус спостереження", "browser watch status", "watch status"}):
-        return ResolvedIntent(
-            action="browser_watch_status",
-            target="observer",
-            risk="safe",
-            need_confirmation=False,
-            confidence=0.9,
-            source="heuristic_user_text",
-            reason="User text asks for browser observer status.",
-            matched="browser_watch_status",
-        )
-
-    if _contains_any(
-        text,
-        {
-            "покажи події спостереження",
-            "покажи события наблюдения",
-            "show watch events",
-            "browser watch events",
-        },
-    ):
+    if _looks_like_browser_event_request(text, raw_text):
         return ResolvedIntent(
             action="browser_watch_events",
             target="observer",
@@ -1263,17 +1228,102 @@ def _resolve_browser_watch(text: str, raw_text: str = "") -> ResolvedIntent | No
             need_confirmation=False,
             confidence=0.9,
             source="heuristic_user_text",
-            reason="User text asks for browser observer events.",
+            reason="User text asks for Browser Observer events.",
             matched="browser_watch_events",
             params=_browser_event_params(raw_text),
         )
 
-    match = re.search(r"(?:перевір профіль спостереження|poll watch profile)\s+([a-z0-9_-]+(?:\s+[a-z0-9_-]+)*)", text)
-    if match:
-        profile_name = "_".join(match.group(1).split())
+    if _contains_any(
+        text,
+        {
+            "статус спостереження",
+            "статус спостерігача",
+            "статус наблюдения",
+            "статус наблюдателя",
+            "какие наблюдения сейчас активны",
+            "які спостереження зараз активні",
+            "покажи завершенные наблюдения",
+            "покажи завершённые наблюдения",
+            "покажи завершені спостереження",
+            "browser watch status",
+            "watch status",
+            "active browser watches",
+            "show completed watches",
+        },
+    ):
+        return ResolvedIntent(
+            action="browser_watch_status",
+            target="observer",
+            risk="safe",
+            need_confirmation=False,
+            confidence=0.9,
+            source="heuristic_user_text",
+            reason="User text asks for Browser Observer status.",
+            matched="browser_watch_status",
+        )
+
+    if _contains_any(
+        text,
+        {
+            "зупини спостереження",
+            "зупини watcher",
+            "останови наблюдение",
+            "останови наблюдатель",
+            "stop browser watch",
+            "stop observation",
+        },
+    ):
+        return ResolvedIntent(
+            action="browser_watch_stop",
+            target=_extract_watch_target(raw_text, "stop"),
+            risk="safe",
+            need_confirmation=False,
+            confidence=0.9,
+            source="heuristic_user_text",
+            reason="User text asks to stop a Browser Observer watch.",
+            matched="browser_watch_stop",
+        )
+
+    if _contains_any(
+        text,
+        {
+            "стеж за профілем",
+            "запусти спостереження",
+            "начни наблюдать за браузером",
+            "начни наблюдение",
+            "запусти наблюдение за страницей",
+            "запусти наблюдение",
+            "start browser observation",
+            "start browser watch",
+            "watch browser page",
+        },
+    ):
+        return ResolvedIntent(
+            action="browser_watch_start",
+            target=_extract_watch_target(raw_text, "start"),
+            risk="safe",
+            need_confirmation=False,
+            confidence=0.9,
+            source="heuristic_user_text",
+            reason="User text asks to start a configured Browser Observer profile.",
+            matched="browser_watch_start",
+        )
+
+    if _contains_any(
+        text,
+        {
+            "перевір профіль спостереження",
+            "перевір сторінку один раз",
+            "проверь страницу один раз",
+            "проверь профиль наблюдения",
+            "poll watch profile",
+            "check page once",
+            "poll browser page once",
+        },
+    ):
         return ResolvedIntent(
             action="browser_watch_poll_once",
-            target=profile_name,
+            target=_extract_watch_target(raw_text, "poll"),
             risk="safe",
             need_confirmation=False,
             confidence=0.9,
@@ -1282,6 +1332,85 @@ def _resolve_browser_watch(text: str, raw_text: str = "") -> ResolvedIntent | No
             matched="browser_watch_poll_once",
         )
     return None
+
+
+def _looks_like_browser_event_request(text: str, raw_text: str) -> bool:
+    has_event_noun = _contains_any(
+        text,
+        {
+            "події",
+            "подій",
+            "события",
+            "событий",
+            "events",
+            "browser watch events",
+        },
+    )
+    has_event_request = _contains_any(
+        text,
+        {
+            "покажи",
+            "последние",
+            "останні",
+            "show",
+            "last",
+        },
+    )
+    if has_event_noun and has_event_request:
+        return True
+    return bool(
+        re.search(
+            r"(?i)\b(?:покажи|show)\s+[A-Za-z][A-Za-z0-9_.:-]*\s+"
+            r"(?:с|з|із|from)\s+(?:сайта\s+|сайту\s+|site\s+)?"
+            r"(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,63}\b",
+            raw_text or "",
+        )
+    )
+
+
+def _extract_watch_target(raw_text: str, action: str) -> str:
+    raw = raw_text or ""
+    patterns = [
+        r"(?i)\b(?:профиль|профиля|профилю|профилем|профіль|профілю|профілем|profile)\s+"
+        r"([A-Za-z0-9_.:-]+)",
+    ]
+    if action == "stop":
+        patterns.append(
+            r"(?i)\b(?:останови|зупини|stop)\s+"
+            r"(?:наблюдение|наблюдателя|спостереження|watcher|(?:browser\s+)?watch)\s+"
+            r"([A-Za-z0-9_.:-]+)"
+        )
+    elif action == "start":
+        patterns.append(
+            r"(?i)\b(?:запусти|начни|start)\s+"
+            r"(?:наблюдение|спостереження|watch)\s+([A-Za-z0-9_.:-]+)"
+        )
+    elif action == "poll":
+        patterns.append(
+            r"(?i)\b(?:перевір профіль спостереження|проверь профиль наблюдения|poll watch profile)\s+"
+            r"([A-Za-z0-9_.:-]+)"
+        )
+    ignored = {
+        "за",
+        "браузером",
+        "браузер",
+        "browser",
+        "страницей",
+        "страницу",
+        "сторінкою",
+        "сторінку",
+        "page",
+        "один",
+        "once",
+    }
+    for pattern in patterns:
+        match = re.search(pattern, raw)
+        if match:
+            candidate = match.group(1).strip().lower()
+            if candidate not in ignored:
+                cleaned = _sanitize_browser_filter("profile", candidate)
+                return str(cleaned or "")
+    return ""
 
 
 def _resolve_minecraft(text: str) -> ResolvedIntent | None:
@@ -1365,8 +1494,13 @@ def _resolved_from_payload(payload: dict[str, Any], source: str, user_text: str 
     except (TypeError, ValueError):
         confidence = 0.0
 
-    reason = str(payload.get("reason") or "LLM resolver result.")
-    params = _sanitize_params(action, payload.get("params"))
+    reason = sanitize_text(payload.get("reason") or "LLM resolver result.")
+    raw_params = payload.get("params")
+    if _has_unknown_llm_params(action, raw_params):
+        action = None
+        reason = "LLM resolver returned unsupported Browser Observer parameters."
+        confidence = min(confidence, 0.4)
+    params = _sanitize_params(action, raw_params)
     return ResolvedIntent(
         action=action,
         target=target,
@@ -1389,14 +1523,20 @@ def _sanitize_params(action: str | None, raw_params: object) -> dict[str, object
     if action in {"media_seek_forward", "media_seek_backward"}:
         return {"seconds": get_int_param(params, "seconds", 5, 1, 300)}
     if action == "browser_watch_events":
-        return {
-            key: value
-            for key, value in params.items()
-            if key in {"profile", "source", "event_type", "url", "domain", "from", "to", "limit", "after_event_id"}
-            and isinstance(value, (str, int))
-            and not isinstance(value, bool)
-        }
+        return {key: _sanitize_browser_filter(key, value) for key, value in params.items()}
     return {}
+
+
+def _has_unknown_llm_params(action: str | None, raw_params: object) -> bool:
+    if not action or not action.startswith("browser_watch_"):
+        return False
+    if raw_params is None:
+        return False
+    if not isinstance(raw_params, dict):
+        return True
+    if action != "browser_watch_events":
+        return bool(raw_params)
+    return bool(set(raw_params) - _BROWSER_EVENT_FILTERS)
 
 
 def _build_llm_prompt(user_text: str, command_history: list[dict[str, object]]) -> str:
@@ -1406,11 +1546,14 @@ def _build_llm_prompt(user_text: str, command_history: list[dict[str, object]]) 
         "Never return raw shell commands. Only use allowed actions.\n"
         "Use open_app only for whitelist apps/sites, never for arbitrary URLs.\n"
         "Use browser_task_run only for whitelist browser tasks such as humanbenchmark_aim; never for arbitrary URLs.\n"
-        "Use browser_watch_* only for configured observer profiles; never create arbitrary profiles or URLs from natural language.\n"
+        "Browser Observer is observation-only: never turn browser_watch_* into clicks, navigation, typing, or browser_task_run.\n"
+        "Use browser_watch_start/stop/poll_once only with a configured profile/watch target; if it is missing, leave target empty.\n"
         "For Minecraft server phrases, use the local Minecraft Server Manager actions and do not ask for IP/domain.\n"
         f"Allowed actions: {sorted(ALLOWED_ACTIONS)}\n"
         "Optional params: step_percent for volume_up/volume_down, level_percent for volume_set, seconds for media_seek_forward/media_seek_backward. "
-        "For browser_watch_events only: profile, source, event_type, url, domain, from, to, limit, after_event_id.\n"
+        "For browser_watch_events only, params may contain exactly: profile, event_types, since, until, site, url_prefix, limit, after_event_id, after_position. "
+        "event_types must stay a JSON string or array, and integer/boolean types must not be coerced. "
+        "ISO times without timezone must be preserved for downstream rejection, never given an invented timezone.\n"
         "If unclear, set action null and confidence below 0.65.\n"
         f"Recent command history: {json.dumps(recent_history, ensure_ascii=False)}\n"
         f"User text: {user_text}\n"
@@ -1429,18 +1572,109 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+_BROWSER_EVENT_FILTERS = {
+    "profile",
+    "event_types",
+    "since",
+    "until",
+    "site",
+    "url_prefix",
+    "limit",
+    "after_event_id",
+    "after_position",
+}
+_ISO_TIME_RE = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?"
+
+
 def _browser_event_params(raw_text: str) -> dict[str, object]:
-    supported = {"profile", "source", "event_type", "url", "domain", "from", "to", "limit", "after_event_id"}
     params: dict[str, object] = {}
     for match in re.finditer(r"(?<!\S)([A-Za-z_]+)=([^\s]+)", raw_text or ""):
         key = match.group(1).lower()
-        if key not in supported:
-            continue
         value: object = match.group(2).strip()
-        if key == "limit" and str(value).isdigit():
+        if key in {"limit", "after_position"} and str(value).isdigit():
             value = int(str(value))
-        params[key] = value
+        elif key == "event_types":
+            value = [item for item in re.split(r"[,|]", str(value)) if item]
+        params[key] = _sanitize_browser_filter(key, value)
+
+    natural_patterns = {
+        "profile": [
+            r"(?i)\b(?:профиля|профілю|profile)\s+([A-Za-z0-9_.:-]+)",
+        ],
+        "site": [
+            r"(?i)\b(?:с сайта|з сайту|із сайту|from site|site)\s+((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,63})\b",
+            r"(?i)\b[A-Za-z][A-Za-z0-9_.:-]*\s+(?:с|з|із|from)\s+((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,63})\b",
+        ],
+        "url_prefix": [
+            r"(?i)\b(?:по url|для url|from url|url prefix|url_prefix)\s+(https?://[^\s]+)",
+        ],
+        "after_position": [
+            r"(?i)\b(?:после позиции|після позиції|after position)\s+([^\s]+)",
+        ],
+        "after_event_id": [
+            r"(?i)\b(?:после события|після події|after event)\s+([A-Za-z0-9_.:-]+)",
+            r"(?i)\b(?:события|події|events)\s+(?:после|після|after)\s+([A-Za-z0-9_.:-]+)",
+        ],
+        "since": [
+            rf"(?i)\b(?:since|начиная с|починаючи з|с)\s+({_ISO_TIME_RE})",
+        ],
+        "until": [
+            rf"(?i)\b(?:until|до)\s+({_ISO_TIME_RE})",
+        ],
+    }
+    for key, patterns in natural_patterns.items():
+        if key in params:
+            continue
+        for pattern in patterns:
+            match = re.search(pattern, raw_text or "")
+            if not match:
+                continue
+            value = match.group(1).rstrip(".,);]")
+            if key == "after_position" and value.isdigit():
+                params[key] = int(value)
+            else:
+                params[key] = _sanitize_browser_filter(key, value)
+            break
+
+    if "limit" not in params:
+        limit_match = re.search(
+            r"(?i)\b(?:последние|последних|останні|last)\s+([^\s]+)\s+"
+            r"(?:событи[йя]|поді[йї]|events?)\b",
+            raw_text or "",
+        )
+        if limit_match:
+            value = limit_match.group(1)
+            params["limit"] = int(value) if value.isdigit() else sanitize_text(value)
+
+    if "event_types" not in params:
+        type_match = re.search(
+            r"(?i)\b(?:типа|типов|типу|типів|type|types)\s+"
+            r"([A-Za-z][A-Za-z0-9_.:-]*(?:\s*(?:,|и|та|and)\s*[A-Za-z][A-Za-z0-9_.:-]*)*)",
+            raw_text or "",
+        )
+        if type_match:
+            values = [
+                item
+                for item in re.split(r"\s*(?:,|и|та|and)\s*", type_match.group(1), flags=re.IGNORECASE)
+                if item
+            ]
+            params["event_types"] = [_sanitize_browser_filter("event_types", item) for item in values]
+        else:
+            direct_type = re.search(
+                r"(?i)\b(?:покажи|show)\s+([A-Za-z][A-Za-z0-9_.:-]*)\s+"
+                r"(?:с|з|із|from)\s+(?:сайта\s+|сайту\s+|site\s+)?"
+                r"(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,63}\b",
+                raw_text or "",
+            )
+            if direct_type and direct_type.group(1).casefold() not in {"events", "события", "події"}:
+                params["event_types"] = [sanitize_text(direct_type.group(1))]
     return params
+
+
+def _sanitize_browser_filter(key: str, value: object) -> object:
+    if key == "url_prefix" and isinstance(value, str):
+        return sanitize_url(value.rstrip(".,);]")) or "[redacted-url]"
+    return sanitize_event_data(value, key=key)
 
 
 def _normalize_text(value: str | None) -> str:
