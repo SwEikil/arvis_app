@@ -136,16 +136,24 @@ class VoiceInputTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
             path = Path(tmp.name)
         _write_wav(path, [6000] * 1600)
+        config = _config()
 
         with patch(
             "voice_input.get_voice_dependency_status",
             return_value=VoiceDependencyStatus(True, True, True),
-        ), patch("voice_input.record_microphone_to_temp_wav", return_value=path), patch(
+        ), patch(
+            "voice_input.ensure_stt_model_loaded",
+            return_value=object(),
+        ) as model_loader, patch(
+            "voice_input.record_microphone_to_temp_wav",
+            return_value=path,
+        ), patch(
             "voice_input._run_model_transcribe",
             return_value=("тест", types.SimpleNamespace(language="uk")),
         ):
-            result = transcribe_once(_config())
+            result = transcribe_once(config)
 
+        model_loader.assert_called_once_with(config)
         self.assertTrue(result.ok)
         self.assertEqual(result.text, "тест")
         self.assertFalse(path.exists())
