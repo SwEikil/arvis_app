@@ -27,6 +27,8 @@
 
 - [`architecture.md`](architecture.md) — intent/action pipeline, runtime state,
   memory limitations, module map і safety boundaries.
+- [`context_memory_audit.md`](context_memory_audit.md) — перевірений baseline
+  conversation context, межі memory domains і target architecture.
 
 ## Subsystems
 
