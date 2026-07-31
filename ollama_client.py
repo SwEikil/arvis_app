@@ -19,13 +19,20 @@ class OllamaClient:
         self.model = model or ARVIS_MODEL or DEFAULT_ARVIS_MODEL
         self.timeout = timeout
 
-    def chat(self, messages: list[dict[str, str]]) -> tuple[str | None, str | None]:
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        response_format: str | dict[str, Any] | None = None,
+    ) -> tuple[str | None, str | None]:
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "stream": False,
             "keep_alive": "30s",
         }
+        if response_format is not None:
+            payload["format"] = response_format
 
         try:
             response = requests.post(

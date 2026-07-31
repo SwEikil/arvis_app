@@ -7,7 +7,7 @@
 | Команда | Дія |
 | --- | --- |
 | `/exit`, `/quit` | Завершити REPL і зупинити in-process browser watchers. |
-| `/reset` | Очистити active chat history. |
+| `/reset` | Почати нову conversation session: очистити history, summary і command context. |
 | `/debug on`, `/debug off` | Увімкнути або вимкнути diagnostic panels. |
 | `/dryrun` | Показати стан dry-run. |
 | `/dryrun on`, `/dryrun off` | Увімкнути preview-only або дозволити safe execution. |
@@ -20,7 +20,7 @@
 | `/voice test` | Розпізнати sample без виконання команди. |
 | `/voice once` | Розпізнати один sample і передати текст у звичайний pipeline. |
 | `/history` | Показати до 40 активних messages. |
-| `/summary` | Показати placeholder `session_summary`. |
+| `/summary` | Показати validated rolling `session_summary` поточної session. |
 | `/help` | Показати REPL-команди. |
 
 У REPL `/doctor --json` підказує використати CLI:
@@ -30,6 +30,11 @@ python main.py doctor --json
 ```
 
 Повні CLI flags описані у [`doctor.md`](doctor.md).
+
+`/reset` створює новий session UUID, але зберігає поточні debug і dry-run
+налаштування. `/reload` та `/restart` переносять той самий UUID, bounded history,
+summary і command context через приватний one-shot snapshot. Звичайний exit не
+створює durable conversation snapshot.
 
 ## Dry-run
 

@@ -77,9 +77,19 @@ public observer event → private local decision → private local action
 
 ## Conversation context і memory
 
-- Active history живе в RAM і обмежена 40 messages.
-- `session_summary` уже передається в context builder, але updater поки
-  placeholder і не створює rolling summary.
+- `conversation_summary.py` перевіряє форму `(user, assistant)* [, user]`,
+  deterministic character budgets, oldest completed prefix і strict summary
+  JSON/section contract.
+- Після completed turn soft limits `32 messages` або `24 000 characters`
+  запускають не більше одного bounded summarizer call. Останні вісім completed
+  turns normal compaction завжди лишає verbatim.
+- Перед main Ollama request hard limits `40 messages` і `32 000 characters`
+  спочатку запускають normal compaction, а при failure — warned eviction лише
+  oldest completed turns. Pending user message не summarise/evict.
+- Validated summary обмежений `4 000 characters` і передається основній моделі
+  як JSON-encoded untrusted historical data, а не як вільна instruction.
+- Summary sanitizer до і після model call редагує credentials, private keys,
+  OTP/recovery codes, personal paths і direct prompt-control text.
 - `MEMORY_INTENT` парситься та може показуватися у diagnostic panel, але не
   зберігається як user memory.
 - До 10 command results зберігаються в RAM для bounded repeat/reverse repair.
@@ -89,7 +99,7 @@ public observer event → private local decision → private local action
 
 ## Reload/restart state
 
-`/reload` і `/restart` best-effort записують
+`/reload` і `/restart` best-effort атомарно записують
 `.runtime/reload_state.json`, після чого замінюють поточний Python process через
 `os.execv()`.
 
@@ -97,11 +107,14 @@ State може містити:
 
 - `dry_run`;
 - `debug`;
-- placeholder `session_summary`;
-- JSON-safe active history;
+- session UUID;
+- bounded validated `session_summary`;
+- bounded structurally valid active history;
 - JSON-safe command history і counter.
 
-Пошкоджений state не ламає startup і видаляється. Reload зупиняє in-process
+Snapshot і `.runtime` отримують private permissions там, де це підтримується;
+write використовує temporary file та `os.replace()`. State є one-shot,
+а invalid UUID, summary або history безпечно відхиляються. Reload зупиняє in-process
 Browser Observer watchers, але не зупиняє Ollama, Minecraft server або tmux.
 Public watchers не відновлюються автоматично після process restart.
 
@@ -110,6 +123,7 @@ Public watchers не відновлюються автоматично післ�
 | Файл / каталог | Відповідальність |
 | --- | --- |
 | `main.py` | REPL, slash commands, history, reload і voice entry points. |
+| `conversation_summary.py` | Rolling summary limits, validation, sanitization, compaction і emergency preflight. |
 | `ollama_client.py` | Ollama `/api/chat` access. |
 | `intent_parser.py` | Parsing assistant text та structured intents. |
 | `intent_resolver.py` | Candidate intent resolution без execution. |

@@ -5,10 +5,9 @@
 
 ## Статус и scope
 
-Этот документ задаёт утверждённый контракт первой реализации для Этапа 3. На
-текущем Этапе 2 он не меняет runtime-поведение:
-`update_session_summary()` остаётся placeholder, Python-код, schemas и tests не
-изменяются.
+Этот документ задаёт контракт, реализованный на Этапе 3. Runtime implementation
+находится в `conversation_summary.py`, а orchestration точек preflight,
+post-turn и session lifecycle — в `main.py` и `runtime_state.py`.
 
 Rolling summary сжимает старую часть только **текущей conversation session**.
 Он является bounded conversation context, а не долговременной памятью:
@@ -19,28 +18,28 @@ Rolling summary сжимает старую часть только **текущ
 - не создаёт `ACTION_INTENT`, не вызывает resolver/router и не выполняет actions;
 - не смешивается с отдельным `command_history`.
 
-## Текущий baseline flow
+## Реализованный flow
 
-В v0.3.1 успешный text turn выглядит так:
+Успешный text turn выглядит так:
 
 ```text
 user text
   → append current user message to active_history
-  → build_context_messages(active_history, session_summary)
-  → optional summary as a system message + last 40 messages
+  → hard-budget preflight
+  → optional normal compaction, затем emergency eviction только при overflow
+  → build bounded context with JSON-wrapped untrusted summary
   → OllamaClient.chat()
   → parse assistant response
   → resolver / Command Router / Response Renderer
   → append parsed assistant message or action-aware rendered response
-  → trim_history_with_summary_placeholder()
+  → one bounded post-turn compaction attempt at soft threshold
 ```
 
-`MAX_HISTORY_MESSAGES = 40`. Текущий trim считает отдельные messages, может
-отрезать половину turn, вызывает no-op `update_session_summary()` и удаляет
-overflow даже без нового summary. `session_summary` создаётся пустым, передаётся
-в `build_context_messages()`, переносится через reload snapshot и не имеет
-ограничения размера. При Ollama error только что добавленный user message
-удаляется, а незавершённый turn не остаётся в history.
+Normal compaction сохраняет восемь newest completed turns, удаляет только exact
+oldest completed prefix после строгой проверки replacement summary и никогда не
+режет половину turn. При Ollama error только что добавленный user message
+удаляется, а незавершённый turn не остаётся в history. Hard-limit eviction
+остаётся отдельным явно degraded path и не изменяет validated summary.
 
 Только `/voice once` передаёт распознанный текст в тот же `process_user_text()`.
 `/voice test` и `/voice diagnose` не входят в conversation history. Slash-команды
@@ -404,16 +403,18 @@ context reset из-за corruption, а не как summary. Восстановл
 | `/exit`, `/quit`, EOF, interrupt | Не сохранять conversation history или summary; они заканчиваются вместе с session/process. |
 | Ollama/summarizer failure | Не менять session ID, user memory или MCP memory. |
 
-Baseline `/reset` сейчас очищает только `active_history`, а reload state ещё не
-имеет `session_id`. Это известные implementation gaps Этапа 3, не изменения
-текущего документационного этапа.
+Эта lifecycle-семантика реализована. Reload snapshot проверяет UUID, строгую
+conversation sequence и bounds, записывается атомарно с private permissions и
+удаляется после единственной попытки restore.
 
 ## Использование Ollama в v1
 
 Первая реализация должна переиспользовать существующий `OllamaClient` и ту же
 configured model (`ARVIS_MODEL`, default `arvis`). Summarization — отдельный
 bounded call к `/api/chat` с собственным trusted prompt и strict JSON output
-validation. Его raw output не проходит через `parse_assistant_response()`:
+validation. Call использует Ollama structured output mode `format: "json"`, но
+raw response всё равно проходит полный application validator и не может ослабить
+его правила. Его raw output не проходит через `parse_assistant_response()`:
 иначе model-generated intents могли бы смешаться с summary contract.
 
 Новый provider, tokenizer и тяжёлые зависимости не нужны. Отдельный summarizer

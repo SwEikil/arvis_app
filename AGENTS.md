@@ -18,7 +18,7 @@ Current implemented features:
 
 - Terminal REPL chat with Rich UI.
 - Ollama `/api/chat` client with default model name `arvis`.
-- Active in-memory chat history with a placeholder for future rolling `session_summary`.
+- Bounded active conversation history with validated rolling `session_summary`.
 - Parsing of `ACTION_INTENT` and `MEMORY_INTENT` from model output.
 - Intent Resolver fallback for natural commands when the model does not emit a usable action intent.
 - Command Router as the final whitelist and safety gate.
@@ -133,6 +133,7 @@ Optional browser-vision/observer dependencies must also be imported lazily. Text
 Important files and responsibilities:
 
 - `main.py` - REPL loop, slash commands, history, reload handling, voice command entry points.
+- `conversation_summary.py` - conversation structure, budgets, sanitization, rolling compaction, and emergency eviction.
 - `arvis_mcp_server.py` - standalone stdio MCP context servant for coding agents.
 - `project_context.py` - safe, deterministic project facts/search/excerpt/git/memory helpers.
 - `ollama_client.py` - Ollama API access.
@@ -408,9 +409,10 @@ When documenting observer-style browser features, describe them as observation/e
 
 ## Current development direction
 
-The next major direction after the v0.3.1 baseline is Context & Memory Core:
-rolling conversation summary, separate user memory, Memory Router, relevant
-context building, memory management commands, and privacy/secret filtering.
+The next major direction after the v0.3.1 baseline is Context & Memory Core.
+Rolling conversation summary is implemented; separate user memory, Memory
+Router, relevant context building, memory management commands, and broader
+privacy/secret filtering remain later work.
 `ROADMAP.md` is the canonical planning summary.
 
 The project is moving toward a reliable local assistant that can gradually control safe desktop tasks. Prefer boring, testable safety over flashy features.

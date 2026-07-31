@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from io import StringIO
 from pathlib import Path
@@ -8,6 +9,7 @@ from unittest.mock import patch
 
 import doctor
 import main
+from conversation_summary import new_session_id
 from command_router import CommandResult
 from intent_resolver import IntentResolver
 from rich.console import Console
@@ -44,6 +46,30 @@ class FakeChatClient:
 
     def chat(self, messages: list[dict[str, str]]) -> tuple[str, None]:
         return self.response, None
+
+
+class SequenceChatClient:
+    def __init__(self, responses: list[tuple[str | None, str | None]]) -> None:
+        self.responses = list(responses)
+        self.calls: list[list[dict[str, str]]] = []
+
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        response_format: str | dict[str, object] | None = None,
+    ) -> tuple[str | None, str | None]:
+        self.calls.append(messages)
+        return self.responses.pop(0)
+
+
+VALID_ROLLING_SUMMARY = """Goal: continue safely
+Confirmed facts: None
+Constraints: None
+Decisions: None
+Open questions: None
+Next actions: None
+Names/identifiers: None"""
 
 
 class RecordingRouter:
@@ -92,6 +118,60 @@ class MainReloadCommandTests(unittest.TestCase):
         self.assertFalse(result.exit_requested)
         save_state.assert_called_once()
         restart.assert_called_once()
+
+    def test_reload_preserves_same_session_uuid(self) -> None:
+        router = Mock()
+        router.dry_run = True
+        session_id = new_session_id()
+
+        with patch("main.save_reload_state", return_value=True) as save_state, patch(
+            "main.restart_current_process"
+        ):
+            result = main.handle_command(
+                "/reload", [], "", True, router, [], 0, session_id=session_id
+            )
+
+        self.assertEqual(result.session_id, session_id)
+        self.assertEqual(save_state.call_args.kwargs["session_id"], session_id)
+
+    def test_reset_clears_conversation_and_command_context_and_rotates_uuid(self) -> None:
+        router = Mock()
+        router.dry_run = False
+        old_session_id = new_session_id()
+        active_history = [{"role": "user", "content": "hello"}]
+        command_history = [{"counter": 4}]
+
+        result = main.handle_command(
+            "/reset",
+            active_history,
+            "old summary",
+            True,
+            router,
+            command_history,
+            4,
+            session_id=old_session_id,
+        )
+
+        self.assertEqual(active_history, [])
+        self.assertEqual(command_history, [])
+        self.assertEqual(result.session_summary, "")
+        self.assertEqual(result.command_counter, 0)
+        self.assertNotEqual(result.session_id, old_session_id)
+        self.assertTrue(result.debug)
+        self.assertFalse(router.dry_run)
+
+    def test_normal_exit_does_not_save_conversation(self) -> None:
+        router = Mock()
+        router.dry_run = True
+        with patch("main.save_reload_state") as save_state, patch(
+            "main.shutdown_all_browser_watch_managers"
+        ):
+            result = main.handle_command(
+                "/exit", [], "", False, router, [], 0, session_id=new_session_id()
+            )
+
+        self.assertTrue(result.exit_requested)
+        save_state.assert_not_called()
 
     def test_restart_command_is_recognized(self) -> None:
         router = Mock()
@@ -144,11 +224,13 @@ class MainReloadCommandTests(unittest.TestCase):
         active_history: list[dict[str, str]] = []
         command_history: list[dict[str, object]] = []
 
-        session_summary, debug, command_counter, restored = main.restore_runtime_state(
+        session_id = new_session_id()
+        session_summary, restored_session_id, debug, command_counter, restored = main.restore_runtime_state(
             {
                 "dry_run": False,
                 "debug": True,
-                "session_summary": "summary",
+                "session_id": session_id,
+                "session_summary": "",
                 "active_history": [{"role": "user", "content": "hello"}],
                 "command_history": [{"counter": 3, "normalized_action": "volume_up"}],
             },
@@ -160,10 +242,36 @@ class MainReloadCommandTests(unittest.TestCase):
         self.assertTrue(restored)
         self.assertFalse(router.dry_run)
         self.assertTrue(debug)
-        self.assertEqual(session_summary, "summary")
+        self.assertEqual(session_summary, "")
+        self.assertEqual(restored_session_id, session_id)
         self.assertEqual(active_history, [{"role": "user", "content": "hello"}])
         self.assertEqual(command_history, [{"counter": 3, "normalized_action": "volume_up"}])
         self.assertEqual(command_counter, 3)
+
+    def test_restore_runtime_state_rejects_invalid_uuid_and_corrupted_history(self) -> None:
+        router = Mock()
+        router.dry_run = True
+        active_history: list[dict[str, str]] = []
+        command_history: list[dict[str, object]] = []
+
+        restored = main.restore_runtime_state(
+            {
+                "dry_run": True,
+                "debug": False,
+                "session_id": "invalid",
+                "session_summary": "",
+                "active_history": [{"role": "assistant", "content": "orphan"}],
+                "command_history": [],
+                "command_counter": 0,
+            },
+            active_history,
+            command_history,
+            router,
+        )
+
+        self.assertEqual(restored[0], "")
+        self.assertTrue(main.is_valid_session_id(restored[1]))
+        self.assertEqual(active_history, [])
 
     def test_doctor_repl_command_is_recognized_without_router(self) -> None:
         router = Mock()
@@ -276,6 +384,130 @@ class MainReloadCommandTests(unittest.TestCase):
         self.assertNotIn("launch_game_module", debug_output)
         self.assertNotIn("aim_training", debug_output)
         self.assertNotIn("browser_task_target_not_whitelisted", debug_output)
+        self.assertIn("Підтверджено 30/30", active_history[-1]["content"])
+
+    def test_post_turn_compaction_uses_separate_raw_json_call(self) -> None:
+        active_history: list[dict[str, str]] = []
+        for index in range(16):
+            active_history.extend(
+                (
+                    {"role": "user", "content": f"user {index}"},
+                    {"role": "assistant", "content": f"assistant {index}"},
+                )
+            )
+        client = SequenceChatClient(
+            [
+                ("normal answer", None),
+                (json.dumps({"summary": VALID_ROLLING_SUMMARY}), None),
+            ]
+        )
+        router = Mock()
+        router.dry_run = True
+        resolver = IntentResolver(Mock())
+
+        updated_summary, _ = main.process_user_text(
+            "hello",
+            active_history,
+            "",
+            False,
+            router,
+            resolver,
+            client,  # type: ignore[arg-type]
+            [],
+            0,
+            session_id=new_session_id(),
+        )
+
+        self.assertEqual(updated_summary, VALID_ROLLING_SUMMARY)
+        self.assertEqual(len(active_history), 16)
+        self.assertEqual(len(client.calls), 2)
+        self.assertEqual(client.calls[1][0]["role"], "system")
+        self.assertEqual(client.calls[1][1]["role"], "user")
+
+    def test_oversized_current_input_never_reaches_main_ollama(self) -> None:
+        client = SequenceChatClient([])
+        active_history: list[dict[str, str]] = []
+        router = Mock()
+        router.dry_run = True
+
+        updated_summary, counter = main.process_user_text(
+            "x" * 32_001,
+            active_history,
+            "",
+            False,
+            router,
+            IntentResolver(Mock()),
+            client,  # type: ignore[arg-type]
+            [],
+            2,
+            session_id=new_session_id(),
+        )
+
+        self.assertEqual(updated_summary, "")
+        self.assertEqual(counter, 2)
+        self.assertEqual(active_history, [])
+        self.assertEqual(client.calls, [])
+        router.route.assert_not_called()
+
+    def test_main_error_after_successful_preflight_compaction_keeps_summary(self) -> None:
+        active_history: list[dict[str, str]] = []
+        for index in range(20):
+            active_history.extend(
+                (
+                    {"role": "user", "content": f"old user {index}"},
+                    {"role": "assistant", "content": f"old assistant {index}"},
+                )
+            )
+        expected_recent = [dict(item) for item in active_history[-16:]]
+        client = SequenceChatClient(
+            [
+                (json.dumps({"summary": VALID_ROLLING_SUMMARY}), None),
+                (None, "synthetic main error"),
+                ("retry answer", None),
+            ]
+        )
+        router = Mock()
+        router.dry_run = True
+        resolver = IntentResolver(Mock())
+        session_id = new_session_id()
+
+        updated_summary, counter = main.process_user_text(
+            "retry message",
+            active_history,
+            "",
+            False,
+            router,
+            resolver,
+            client,  # type: ignore[arg-type]
+            [],
+            0,
+            session_id=session_id,
+        )
+
+        self.assertEqual(updated_summary, VALID_ROLLING_SUMMARY)
+        self.assertEqual(active_history, expected_recent)
+        self.assertEqual(counter, 0)
+
+        updated_summary, _ = main.process_user_text(
+            "retry message",
+            active_history,
+            updated_summary,
+            False,
+            router,
+            resolver,
+            client,  # type: ignore[arg-type]
+            [],
+            0,
+            session_id=session_id,
+        )
+
+        self.assertEqual(updated_summary, VALID_ROLLING_SUMMARY)
+        self.assertEqual(len(active_history), 18)
+        self.assertEqual(
+            [item["content"] for item in active_history if item["role"] == "user"].count("retry message"),
+            1,
+        )
+        self.assertEqual(active_history[-1], {"role": "assistant", "content": "retry answer"})
 
     def test_voice_test_disabled_does_not_route(self) -> None:
         router = Mock()

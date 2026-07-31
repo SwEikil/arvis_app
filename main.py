@@ -22,6 +22,16 @@ from doctor import parse_doctor_args
 from doctor import render_text_report
 from doctor import run_cli as run_doctor_cli
 from doctor import run_doctor
+from conversation_summary import CompactionResult
+from conversation_summary import ConversationState
+from conversation_summary import HARD_MESSAGE_LIMIT
+from conversation_summary import build_context_messages as build_conversation_context_messages
+from conversation_summary import compact_history
+from conversation_summary import is_valid_session_id
+from conversation_summary import new_session_id
+from conversation_summary import preflight_history
+from conversation_summary import validate_reload_history
+from conversation_summary import validate_reload_summary
 from intent_parser import parse_assistant_response
 from intent_resolver import ALLOWED_ACTIONS
 from intent_resolver import IntentResolver
@@ -47,7 +57,7 @@ from voice_input import record_microphone_to_temp_wav
 from voice_input import transcribe_recorded_audio
 
 
-MAX_HISTORY_MESSAGES = 40
+MAX_HISTORY_MESSAGES = HARD_MESSAGE_LIMIT
 MAX_COMMAND_HISTORY = 10
 
 
@@ -67,6 +77,7 @@ def main() -> None:
     client = OllamaClient()
     active_history: list[dict[str, str]] = []
     session_summary = ""
+    session_id = new_session_id()
     debug = False
     router = CommandRouter(dry_run=True)
     resolver = IntentResolver(client)
@@ -77,7 +88,7 @@ def main() -> None:
     reload_state = load_reload_state()
     reload_state_restored = False
     if reload_state is not None:
-        session_summary, debug, command_counter, reload_state_restored = restore_runtime_state(
+        session_summary, session_id, debug, command_counter, reload_state_restored = restore_runtime_state(
             reload_state,
             active_history,
             command_history,
@@ -119,7 +130,9 @@ def main() -> None:
                 client,
                 command_history,
                 command_counter,
+                session_id=session_id,
             ),
+            session_id=session_id,
         )
         if command_result.exit_requested:
             break
@@ -128,6 +141,8 @@ def main() -> None:
             debug = command_result.debug
             if command_result.command_counter is not None:
                 command_counter = command_result.command_counter
+            if command_result.session_id is not None:
+                session_id = command_result.session_id
             continue
 
         session_summary, command_counter = process_user_text(
@@ -140,6 +155,7 @@ def main() -> None:
             client,
             command_history,
             command_counter,
+            session_id=session_id,
         )
 
     shutdown_all_browser_watch_managers()
@@ -153,12 +169,14 @@ class ReplCommandResult:
         session_summary: str,
         debug: bool,
         command_counter: int | None = None,
+        session_id: str | None = None,
     ) -> None:
         self.handled = handled
         self.exit_requested = exit_requested
         self.session_summary = session_summary
         self.debug = debug
         self.command_counter = command_counter
+        self.session_id = session_id
 
 
 def handle_command(
@@ -170,19 +188,22 @@ def handle_command(
     command_history: list[dict[str, object]] | None = None,
     command_counter: int = 0,
     process_text: Callable[[str], tuple[str, int]] | None = None,
+    session_id: str | None = None,
 ) -> ReplCommandResult:
     command = user_text.lower()
+    current_session_id = session_id if is_valid_session_id(session_id) else new_session_id()
 
     if command in {"/exit", "/quit"}:
         shutdown_all_browser_watch_managers()
         console.print("[dim]Вихід.[/dim]")
-        return ReplCommandResult(True, True, session_summary, debug)
+        return ReplCommandResult(True, True, session_summary, debug, command_counter, current_session_id)
 
     if command in {"/reload", "/restart"}:
         console.print("[cyan]Reloading Arvis, сер...[/cyan]")
         state_saved = save_reload_state(
             dry_run=router.dry_run,
             debug=debug,
+            session_id=current_session_id,
             session_summary=session_summary,
             active_history=active_history,
             command_history=command_history or [],
@@ -202,7 +223,7 @@ def handle_command(
                     border_style="red",
                 )
             )
-        return ReplCommandResult(True, False, session_summary, debug)
+        return ReplCommandResult(True, False, session_summary, debug, command_counter, current_session_id)
 
     if command == "/doctor" or command.startswith("/doctor "):
         show_doctor_report(user_text)
@@ -226,8 +247,10 @@ def handle_command(
 
     if command == "/reset":
         active_history.clear()
-        console.print("[green]Активну історію очищено.[/green]")
-        return ReplCommandResult(True, False, session_summary, debug)
+        if command_history is not None:
+            command_history.clear()
+        console.print("[green]Conversation session очищено, сер.[/green]")
+        return ReplCommandResult(True, False, "", debug, 0, new_session_id())
 
     if command == "/debug on":
         console.print("[green]Debug увімкнено.[/green]")
@@ -281,9 +304,19 @@ def process_user_text(
     client: OllamaClient,
     command_history: list[dict[str, object]],
     command_counter: int,
+    session_id: str | None = None,
 ) -> tuple[str, int]:
+    state = ConversationState(
+        session_id=session_id if is_valid_session_id(session_id) else new_session_id(),
+        active_history=active_history,
+        session_summary=session_summary,
+    )
     active_history.append({"role": "user", "content": user_text})
-    context_messages = build_context_messages(active_history, session_summary)
+    preflight = preflight_history(state, client)
+    _show_context_warning(preflight.warning, preflight.evicted_messages)
+    if not preflight.send_allowed:
+        return state.session_summary, command_counter
+    context_messages = build_context_messages(active_history, state.session_summary)
 
     with console.status("[bold green]Арвіс думає...[/bold green]", spinner="dots"):
         raw_response, error = client.chat(context_messages)
@@ -291,7 +324,7 @@ def process_user_text(
     if error:
         console.print(Panel(error, title="OLLAMA ERROR", border_style="red"))
         active_history.pop()
-        return session_summary, command_counter
+        return state.session_summary, command_counter
 
     parsed, warnings = parse_assistant_response(raw_response or "", debug=debug)
     router_results: list[RouterCommandResult] = []
@@ -370,9 +403,11 @@ def process_user_text(
             "content": final_response if final_router_result is not None else parsed.message,
         }
     )
-    session_summary = trim_history_with_summary_placeholder(active_history, session_summary)
+    compaction = compact_history(state, client)
 
     console.print(Panel(final_response, title="Арвіс", border_style="green"))
+    if compaction.status == "failed":
+        _show_summary_warning(compaction)
 
     if debug and final_router_result is not None and parsed.message.strip():
         console.print(Panel(parsed.message, title="RAW ASSISTANT MESSAGE", border_style="dim"))
@@ -401,49 +436,30 @@ def process_user_text(
     if debug and warnings:
         console.print(Panel("\n".join(warnings), title="DEBUG", border_style="magenta"))
 
-    return session_summary, command_counter
+    return state.session_summary, command_counter
 
 
 def build_context_messages(
     active_history: list[dict[str, str]],
     session_summary: str,
 ) -> list[dict[str, str]]:
-    messages: list[dict[str, str]] = []
-
-    if session_summary.strip():
-        messages.append(
-            {
-                "role": "system",
-                "content": f"Короткий підсумок попередньої розмови:\n{session_summary.strip()}",
-            }
-        )
-
-    messages.extend(active_history[-MAX_HISTORY_MESSAGES:])
-    return messages
+    return build_conversation_context_messages(active_history, session_summary)
 
 
-def trim_history_with_summary_placeholder(
-    active_history: list[dict[str, str]],
-    session_summary: str,
-) -> str:
-    if len(active_history) <= MAX_HISTORY_MESSAGES:
-        return session_summary
-
-    overflow_count = len(active_history) - MAX_HISTORY_MESSAGES
-    overflow_messages = active_history[:overflow_count]
-
-    # Placeholder for a future rolling summarizer. For now it intentionally keeps
-    # the existing summary unchanged and only trims active context.
-    updated_summary = update_session_summary(session_summary, overflow_messages)
-    del active_history[:overflow_count]
-    return updated_summary
+def _show_summary_warning(result: CompactionResult) -> None:
+    console.print("[yellow]Не зміг безпечно оновити підсумок розмови; старий контекст збережено.[/yellow]")
 
 
-def update_session_summary(
-    current_summary: str,
-    old_messages: list[dict[str, str]],
-) -> str:
-    return current_summary
+def _show_context_warning(warning: str | None, evicted_messages: int = 0) -> None:
+    if warning == "context_reset_corrupted":
+        console.print("[yellow]Пошкоджений conversation context скинуто; використовую лише поточний запит.[/yellow]")
+    elif warning == "context_corrupted_input_unavailable":
+        console.print("[yellow]Пошкоджений conversation context скинуто. Поточний запит не відправлено.[/yellow]")
+    elif warning == "context_evicted_without_summary":
+        turns = evicted_messages // 2
+        console.print(f"[yellow]Hard limit: відкинув {turns} старих turn без summary.[/yellow]")
+    elif warning == "current_input_exceeds_hard_budget":
+        console.print("[yellow]Запит завеликий, сер. Скороти його або розділи на кілька повідомлень.[/yellow]")
 
 
 def restore_runtime_state(
@@ -451,8 +467,9 @@ def restore_runtime_state(
     active_history: list[dict[str, str]],
     command_history: list[dict[str, object]],
     router: CommandRouter,
-) -> tuple[str, bool, int, bool]:
+) -> tuple[str, str, bool, int, bool]:
     session_summary = ""
+    session_id = new_session_id()
     debug = False
     command_counter = 0
     restored = False
@@ -467,14 +484,13 @@ def restore_runtime_state(
         debug = debug_value
         restored = True
 
-    summary_value = state.get("session_summary")
-    if isinstance(summary_value, str):
-        session_summary = summary_value
-        restored = True
-
-    restored_active_history = _valid_active_history(state.get("active_history"))
-    if restored_active_history is not None:
-        active_history[:] = restored_active_history[-MAX_HISTORY_MESSAGES:]
+    restored_session_id = state.get("session_id")
+    restored_summary = validate_reload_summary(state.get("session_summary"))
+    restored_active_history = validate_reload_history(state.get("active_history"))
+    if is_valid_session_id(restored_session_id) and restored_summary is not None and restored_active_history is not None:
+        session_id = restored_session_id
+        session_summary = restored_summary
+        active_history[:] = restored_active_history
         restored = True
 
     restored_command_history = _valid_command_history(state.get("command_history"))
@@ -492,23 +508,7 @@ def restore_runtime_state(
             default=0,
         )
 
-    return session_summary, debug, command_counter, restored
-
-
-def _valid_active_history(value: object) -> list[dict[str, str]] | None:
-    if not isinstance(value, list):
-        return None
-
-    messages: list[dict[str, str]] = []
-    for item in value:
-        if not isinstance(item, dict):
-            return None
-        role = item.get("role")
-        content = item.get("content")
-        if not isinstance(role, str) or not isinstance(content, str):
-            return None
-        messages.append({"role": role, "content": content})
-    return messages
+    return session_summary, session_id, debug, command_counter, restored
 
 
 def _valid_command_history(value: object) -> list[dict[str, object]] | None:
