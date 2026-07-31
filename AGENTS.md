@@ -163,6 +163,7 @@ Documentation map:
 - `docs/getting_started.md`, `docs/configuration.md`, `docs/commands.md` - setup and usage references.
 - `docs/architecture.md`, `docs/development.md`, `docs/doctor.md` - architecture, contributor workflow, and diagnostics.
 - `docs/context_memory_audit.md` - audited context/memory baseline, domain boundaries, and target architecture.
+- `docs/rolling_summary_contract.md` - target rolling conversation summary contract, limits, turn boundaries, validation, privacy, and failure semantics.
 - `docs/voice.md`, `docs/browser_vision_agent.md`, `docs/browser_observer.md`, `docs/minecraft_server.md`, `docs/mcp_context_servant.md` - subsystem references.
 
 ## MCP context servant workflow

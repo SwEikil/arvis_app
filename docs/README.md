@@ -29,6 +29,9 @@
   memory limitations, module map і safety boundaries.
 - [`context_memory_audit.md`](context_memory_audit.md) — перевірений baseline
   conversation context, межі memory domains і target architecture.
+- [`rolling_summary_contract.md`](rolling_summary_contract.md) — цільовий
+  контракт bounded rolling summary, turn boundaries, privacy та failure
+  semantics.
 
 ## Subsystems
 
