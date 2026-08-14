@@ -6,8 +6,10 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import project_context
+from mcp_access import load_mcp_access_config
 from project_context import ProjectContextError
 
 
@@ -16,8 +18,18 @@ class ProjectContextTests(unittest.TestCase):
         self._tmpdir = tempfile.TemporaryDirectory()
         self.root = Path(self._tmpdir.name) / "repo"
         self.root.mkdir()
+        self._env = patch.dict(
+            os.environ,
+            {
+                "ARVIS_MCP_PROFILE": "codex",
+                "ARVIS_MCP_PROJECT_ROOT": str(self.root),
+                "ARVIS_MCP_ALLOWED_ROOTS": str(self.root),
+            },
+        )
+        self._env.start()
 
     def tearDown(self) -> None:
+        self._env.stop()
         self._tmpdir.cleanup()
 
     def _write(self, relative: str, text: str = "hello\n") -> Path:
@@ -68,6 +80,42 @@ class ProjectContextTests(unittest.TestCase):
         with self.assertRaises(ProjectContextError):
             project_context.safe_project_path(self.root, "../outside.txt")
 
+    def test_project_root_allowlist_rejects_sibling_parent_root_and_fake_home(self) -> None:
+        sibling = self.root.parent / "sibling"
+        sibling.mkdir()
+        fake_home = self.root.parent / "fake-home"
+        fake_home.mkdir()
+
+        for denied in (sibling, self.root.parent, Path("/"), Path("/etc"), fake_home):
+            with self.subTest(denied=denied):
+                with self.assertRaises(ProjectContextError):
+                    project_context.resolve_project_root(str(denied))
+
+    def test_project_root_allowlist_rejects_dot_dot_escape(self) -> None:
+        sibling = self.root.parent / "sibling"
+        sibling.mkdir()
+
+        with self.assertRaises(ProjectContextError):
+            project_context.resolve_project_root("../sibling")
+
+    def test_project_root_allowlist_rejects_symlink_escape(self) -> None:
+        outside = self.root.parent / "outside"
+        outside.mkdir()
+        (self.root / "outside-link").symlink_to(outside, target_is_directory=True)
+
+        with self.assertRaises(ProjectContextError):
+            project_context.resolve_project_root("outside-link")
+
+    def test_chatgpt_profile_without_allowlist_fails_closed(self) -> None:
+        config = load_mcp_access_config(
+            environ={"ARVIS_MCP_PROFILE": "chatgpt"},
+            cwd=self.root,
+        )
+
+        self.assertEqual(config.allowed_roots, ())
+        with self.assertRaises(ProjectContextError):
+            project_context.resolve_project_root(access_config=config)
+
     def test_read_file_excerpt_reads_bounded_lines(self) -> None:
         self._write("notes.txt", "one\ntwo\nthree\nfour\n")
 
@@ -103,7 +151,104 @@ class ProjectContextTests(unittest.TestCase):
         with self.assertRaises(ProjectContextError) as caught:
             project_context.grep_project("[", project_root=str(self.root), regex=True)
 
-        self.assertIn("Invalid regex", str(caught.exception))
+        self.assertIn("Некоректний regex", str(caught.exception))
+
+    def test_grep_project_rejects_risky_or_oversized_regex(self) -> None:
+        self._write("app.py", "aaaa\n")
+
+        for query in (
+            "(a+)+$",
+            "(a|aa)+$",
+            "a" * (project_context.MAX_REGEX_PATTERN_CHARS + 1),
+        ):
+            with self.subTest(query=query[:20]):
+                with self.assertRaises(ProjectContextError):
+                    project_context.grep_project(query, project_root=str(self.root), regex=True)
+
+    def test_read_and_grep_redact_fake_credentials_without_destroying_code(self) -> None:
+        source = """API_KEY=fake-secret-value
+apiKey: fake-secret-value
+Authorization: Bearer fake-token
+password=fake-password
+Cookie: session=fake-cookie
+token=fake-token
+client_secret=fake-client-secret
+access_token=fake-access-token
+refresh_token=fake-refresh-token
+-----BEGIN PRIVATE KEY-----
+fake-private-key-body
+-----END PRIVATE KEY-----
+
+def handle(token: str, password: str) -> None:
+    # token and password are interface names here.
+    token = get_token()
+"""
+        self._write("settings.py", source)
+
+        excerpt = project_context.read_file_excerpt("settings.py", project_root=str(self.root))
+        private_key_body = project_context.read_file_excerpt(
+            "settings.py",
+            project_root=str(self.root),
+            start_line=11,
+            end_line=11,
+        )
+        grep = project_context.grep_project("fake-", project_root=str(self.root))
+        serialized = repr(excerpt) + repr(private_key_body) + repr(grep)
+
+        for fake_value in (
+            "fake-secret-value",
+            "fake-token",
+            "fake-password",
+            "fake-cookie",
+            "fake-client-secret",
+            "fake-access-token",
+            "fake-refresh-token",
+            "fake-private-key-body",
+        ):
+            self.assertNotIn(fake_value, serialized)
+        self.assertIn("def handle(token: str, password: str) -> None:", excerpt["content"])
+        self.assertIn("# token and password are interface names here.", excerpt["content"])
+        self.assertIn("token = get_token()", excerpt["content"])
+
+    def test_memory_read_redacts_fake_credentials(self) -> None:
+        project_context.memory_append(
+            "API_KEY=fake-memory-secret",
+            name="facts.md",
+            project_root=str(self.root),
+        )
+
+        result = project_context.memory_read("facts.md", project_root=str(self.root))
+
+        self.assertNotIn("fake-memory-secret", result["content"])
+        self.assertIn("[REDACTED]", result["content"])
+
+    def test_task_brief_does_not_echo_credentials_in_terms(self) -> None:
+        self._write("notes.txt", "inspect package metadata\n")
+        task = "inspect token=fake-task-secret sk-proj-abcdefghijklmnop"
+
+        result = project_context.task_brief(task, project_root=str(self.root))
+
+        serialized = repr(result)
+        self.assertNotIn("fake-task-secret", serialized)
+        self.assertNotIn("sk-proj-abcdefghijklmnop", serialized)
+        self.assertNotIn("REDACTED", result["terms"])
+
+    def test_secret_files_and_oversized_files_are_not_read(self) -> None:
+        self._write(".env.production", "API_KEY=fake-secret-value\n")
+        self._write("id_rsa", "fake private key\n")
+        self._write("certificate.pem", "fake private key\n")
+        oversized = self.root / "large.txt"
+        oversized.write_text("x" * (project_context.MAX_SCAN_FILE_BYTES + 1), encoding="utf-8")
+
+        result = project_context.project_map(str(self.root))
+        paths = {item["path"] for item in result["files"]}
+
+        self.assertNotIn(".env.production", paths)
+        self.assertNotIn("id_rsa", paths)
+        self.assertNotIn("certificate.pem", paths)
+        self.assertNotIn("large.txt", paths)
+        with self.assertRaises(ProjectContextError):
+            project_context.read_file_excerpt("large.txt", project_root=str(self.root))
 
     def test_git_status_summary_does_not_crash_outside_git_repo(self) -> None:
         result = project_context.git_status_summary(str(self.root))
@@ -111,6 +256,21 @@ class ProjectContextTests(unittest.TestCase):
         self.assertFalse(result["is_git_repo"])
         self.assertIn("status_short", result["outputs"])
         self.assertTrue(result["errors"])
+
+    def test_git_status_timeout_is_a_controlled_path_free_error(self) -> None:
+        timeout = project_context.subprocess.TimeoutExpired(cmd=["git"], timeout=5)
+        with patch("project_context.subprocess.run", side_effect=timeout):
+            result = project_context.git_status_summary(str(self.root))
+
+        self.assertFalse(result["is_git_repo"])
+        self.assertTrue(result["errors"])
+        self.assertNotIn(str(self.root), repr(result))
+        self.assertTrue(
+            all(
+                message == "Перевищено час очікування команди Git."
+                for message in result["errors"].values()
+            )
+        )
 
     def test_memory_append_and_read_use_memory_directory_only(self) -> None:
         append_result = project_context.memory_append(
@@ -127,6 +287,23 @@ class ProjectContextTests(unittest.TestCase):
         self.assertIn("source=unit_test", read_result["content"])
         self.assertIn("remember this fact", read_result["content"])
 
+    def test_chatgpt_profile_blocks_memory_append(self) -> None:
+        config = load_mcp_access_config(
+            environ={
+                "ARVIS_MCP_PROFILE": "chatgpt",
+                "ARVIS_MCP_ALLOWED_ROOTS": str(self.root),
+            },
+            cwd=self.root,
+        )
+
+        with self.assertRaises(ProjectContextError):
+            project_context.memory_append(
+                "must not be written",
+                project_root=str(self.root),
+                access_config=config,
+            )
+        self.assertFalse((self.root / ".arvis_mcp_memory").exists())
+
     def test_unsupported_memory_filename_is_rejected(self) -> None:
         with self.assertRaises(ProjectContextError):
             project_context.memory_read("../facts.md", project_root=str(self.root))
@@ -139,6 +316,14 @@ class ProjectContextTests(unittest.TestCase):
         checked_paths = [
             repo_root / "project_context.py",
             repo_root / "arvis_mcp_server.py",
+            repo_root / "mcp_access.py",
+            repo_root / "mcp_security.py",
+            repo_root / "system_context.py",
+            repo_root / "tests" / "test_system_context.py",
+            repo_root / ".env.example",
+            repo_root / "doctor.py",
+            repo_root / "README.md",
+            repo_root / "docs" / "configuration.md",
             repo_root / "docs" / "mcp_context_servant.md",
             repo_root / "AGENTS.md",
         ]

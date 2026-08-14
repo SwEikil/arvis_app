@@ -2,7 +2,7 @@
 
 [← Індекс документації](README.md) · [Головна сторінка](../README.md)
 
-## Intent/action pipeline
+## Pipeline наміру та дії
 
 ```text
 user text
@@ -31,7 +31,7 @@ user text
 Нормальний debug output для однієї команди показує один final routed intent і
 один final router result.
 
-## Safety boundary
+## Межа безпеки
 
 ```text
 model/resolver candidate
@@ -43,7 +43,7 @@ Command Router
   └─ block / clarify / not_configured
 ```
 
-Hard rules:
+Обов'язкові правила:
 
 - `CommandRouter(dry_run=True)` є default.
 - Resolver не маршрутизує і не виконує дії.
@@ -53,9 +53,9 @@ Hard rules:
 - Confirmation не симулюється: якщо flow не реалізований, action блокується.
 - External commands запускаються як argv із `shell=False`.
 
-## Browser boundaries
+## Межі браузера
 
-Public Browser Observer:
+Публічний Browser Observer:
 
 ```text
 observe → detect → emit structured event → log/notify
@@ -75,7 +75,7 @@ auto-click framework.
 public observer event → private local decision → private local action
 ```
 
-## Conversation context і memory
+## Контекст розмови та пам'ять
 
 - `conversation_summary.py` перевіряє форму `(user, assistant)* [, user]`,
   deterministic character budgets, oldest completed prefix і strict summary
@@ -97,7 +97,7 @@ public observer event → private local decision → private local action
 Отже, baseline не має SQLite memory, Memory Router або готової довготривалої
 персональної пам’яті. Це наступний напрям у [`ROADMAP.md`](../ROADMAP.md).
 
-## Reload/restart state
+## Стан reload/restart
 
 `/reload` і `/restart` best-effort атомарно записують
 `.runtime/reload_state.json`, після чого замінюють поточний Python process через
@@ -118,7 +118,7 @@ write використовує temporary file та `os.replace()`. State є one-
 Browser Observer watchers, але не зупиняє Ollama, Minecraft server або tmux.
 Public watchers не відновлюються автоматично після process restart.
 
-## Module map
+## Карта модулів
 
 | Файл / каталог | Відповідальність |
 | --- | --- |
@@ -136,6 +136,7 @@ Public watchers не відновлюються автоматично післ�
 | `voice_*.py` | Optional voice config, input, ducking і normalization. |
 | `arvis_mcp_server.py` | Standalone stdio MCP servant. |
 | `project_context.py` | Bounded project facts/search/excerpts/git/memory helpers. |
+| `system_context.py` | Фіксований read-only сервіс перевірки OS/RPM/rpm-ostree/Plasma/Qt/QML. |
 | `tests/` | `unittest` coverage з mocked external boundaries. |
 
 Документація subsystem contracts: [Browser Observer](browser_observer.md),

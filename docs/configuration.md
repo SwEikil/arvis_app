@@ -13,9 +13,9 @@ cp .env.example .env
 Команди з env розбираються через `shlex.split()` і передаються subprocess як
 argv із `shell=False`.
 
-## Core і локальні папки
+## Ядро та локальні папки
 
-| Key | Default / example | Призначення |
+| Ключ | Стандартне значення / приклад | Призначення |
 | --- | --- | --- |
 | `USER_NAME` | `your_name` у template | Локальне ім’я користувача. |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | URL локального Ollama API. |
@@ -26,9 +26,19 @@ argv із `shell=False`.
 Без `.env` core використовує safe defaults для `OLLAMA_HOST` та `ARVIS_MODEL`.
 Machine paths лишаються порожніми.
 
-## App і website launch
+Standalone MCP Context Servant також читає ignored `.env.local` і `.env`, але
+використовує тільки загальні параметри `ARVIS_MCP_*`. Реальні корені проєктів і
+локально вибраний профіль не належать до публічної конфігурації. Повний опис:
+[`mcp_context_servant.md`](mcp_context_servant.md).
 
-| Key | Safe template example |
+Read-only перевірка системи й пакунків не потребує окремих env keys. Backend
+визначається за OS хоста, довіреними executable та ostree boot marker. Пошук у
+репозиторіях працює лише з уже наявним кешем метаданих rpm-ostree і не
+вмикається локальним override.
+
+## Запуск застосунків і сайтів
+
+| Ключ | Безпечний приклад шаблону |
 | --- | --- |
 | `STEAM_COMMAND` | `steam` |
 | `SPOTIFY_COMMAND` | `flatpak run com.spotify.Client` |
@@ -53,9 +63,9 @@ YOUTUBE_COMMAND=brave-browser https://www.youtube.com/
 YOUTUBE_COMMAND=flatpak run com.brave.Browser https://www.youtube.com/
 ```
 
-## Browser
+## Браузер
 
-| Key | Default | Призначення |
+| Ключ | Стандартне значення | Призначення |
 | --- | --- | --- |
 | `ARVIS_BROWSER_DEBUG_SAVE` | `false` | Debug screenshots/events вузького Browser Vision Agent. |
 | `ARVIS_BROWSER_OBSERVER_HEADFUL` | `false` | Видимий Chromium лише для локального observer debugging. |
@@ -65,9 +75,9 @@ examples лежать у [`examples/watch_profiles/`](../examples/watch_profiles
 локальні profiles/templates і runtime output — під `.runtime/browser_observer/`.
 Точний формат: [`browser_observer.md`](browser_observer.md).
 
-## Voice
+## Голос
 
-| Key | Template default | Призначення |
+| Ключ | Стандартне значення шаблону | Призначення |
 | --- | --- | --- |
 | `ARVIS_VOICE_ENABLED` | `false` | Вмикає explicit voice commands. |
 | `ARVIS_STT_BACKEND` | `faster_whisper` | Обраний STT backend. |
@@ -89,7 +99,7 @@ examples лежать у [`examples/watch_profiles/`](../examples/watch_profiles
 на monitor/output/loopback/desktop audio, відхиляються. Докладніше:
 [`voice.md`](voice.md).
 
-## Minecraft server
+## Сервер Minecraft
 
 ```dotenv
 MINECRAFT_SERVER_ENABLED=false
@@ -104,7 +114,7 @@ MINECRAFT_SERVER_COMMAND=./start.sh
 мають залишатися тільки в локальному `.env`. Поведінка:
 [`minecraft_server.md`](minecraft_server.md).
 
-## Local і generated paths
+## Локальні та згенеровані шляхи
 
 Gitignore захищає:
 

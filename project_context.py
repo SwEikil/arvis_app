@@ -4,21 +4,30 @@ import os
 import re
 import subprocess
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from mcp_access import McpAccessConfig, load_mcp_access_config, path_is_within
+from mcp_security import redact_sensitive_lines, redact_sensitive_text
+
 
 class ProjectContextError(ValueError):
-    """Controlled error for unsafe or unsupported project context requests."""
+    """Контрольована помилка небезпечного або непідтримуваного запиту контексту."""
 
 
 EXCLUDED_NAMES = {
+    ".aws",
     ".cache",
     ".codex",
+    ".docker",
     ".env",
     ".env.local",
     ".git",
+    ".gnupg",
+    ".kube",
+    ".ssh",
     ".runtime",
     ".venv",
     "__pycache__",
@@ -32,13 +41,36 @@ EXCLUDED_SUFFIXES = {
     ".bin",
     ".db",
     ".gguf",
+    ".jks",
+    ".key",
+    ".keystore",
     ".log",
+    ".p12",
+    ".pem",
+    ".pfx",
     ".pt",
     ".pth",
     ".pyc",
     ".safetensors",
     ".sqlite",
 }
+SECRET_FILE_NAMES = {
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    ".envrc",
+    ".git-credentials",
+    "auth.json",
+    "credentials",
+    "credentials.json",
+    "id_dsa",
+    "id_ed25519",
+    "id_ecdsa",
+    "id_rsa",
+    "secrets.json",
+    "service-account.json",
+}
+SAFE_SECRET_EXAMPLE_SUFFIXES = (".example", ".sample", ".template")
 MEMORY_DIR_NAME = ".arvis_mcp_memory"
 ALLOWED_MEMORY_FILES = {
     "architecture.md",
@@ -82,51 +114,106 @@ TEXT_FILENAMES = {
     "requirements.txt",
 }
 
+MAX_SCAN_FILE_BYTES = 2 * 1024 * 1024
+MAX_OPERATION_SCAN_BYTES = 32 * 1024 * 1024
+MAX_TRAVERSAL_ENTRIES = 20_000
+MAX_REGEX_PATTERN_CHARS = 256
+MAX_REGEX_LINE_CHARS = 20_000
+MAX_SEARCH_QUERY_CHARS = 1_000
+MAX_TASK_CHARS = 8_000
 
-def resolve_project_root(project_root: str | None = None) -> Path:
-    root_value = project_root or os.environ.get("ARVIS_MCP_PROJECT_ROOT") or os.getcwd()
-    root = Path(root_value).expanduser().resolve()
+
+@dataclass
+class _ScanBudget:
+    max_total_bytes: int = MAX_OPERATION_SCAN_BYTES
+    max_entries: int = MAX_TRAVERSAL_ENTRIES
+    scanned_files: int = 0
+    scanned_bytes: int = 0
+    visited_entries: int = 0
+    truncated: bool = False
+
+
+def resolve_project_root(
+    project_root: str | None = None,
+    *,
+    access_config: McpAccessConfig | None = None,
+) -> Path:
+    config = access_config or load_mcp_access_config()
+    if config.configuration_error:
+        raise ProjectContextError(config.configuration_error)
+    if not config.allowed_roots or config.default_root is None:
+        raise ProjectContextError("Не налаштовано жодного кореня MCP-проєкту.")
+
+    if project_root and project_root.strip():
+        requested = Path(project_root.strip()).expanduser()
+        candidate = requested if requested.is_absolute() else config.default_root / requested
+    else:
+        candidate = config.default_root
+
+    try:
+        root = candidate.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ProjectContextError("Не вдалося визначити корінь проєкту.") from exc
+    if root == Path(root.anchor):
+        raise ProjectContextError("Корінь файлової системи не можна використовувати як корінь проєкту.")
+    if not any(path_is_within(root, allowed_root) for allowed_root in config.allowed_roots):
+        raise ProjectContextError("Корінь проєкту перебуває поза налаштованим списком дозволених коренів.")
     if not root.exists():
-        raise ProjectContextError("Project root does not exist.")
+        raise ProjectContextError("Корінь проєкту не існує.")
     if not root.is_dir():
-        raise ProjectContextError("Project root is not a directory.")
+        raise ProjectContextError("Корінь проєкту не є каталогом.")
     return root
 
 
 def safe_project_path(root: Path, user_path: str) -> Path:
     if not user_path or not user_path.strip():
-        raise ProjectContextError("Path must not be empty.")
+        raise ProjectContextError("Шлях не може бути порожнім.")
 
-    resolved_root = root.expanduser().resolve()
+    try:
+        resolved_root = root.expanduser().resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ProjectContextError("Не вдалося визначити корінь проєкту.") from exc
     requested = Path(user_path).expanduser()
-    candidate = requested.resolve() if requested.is_absolute() else (resolved_root / requested).resolve()
+    try:
+        candidate = requested.resolve() if requested.is_absolute() else (resolved_root / requested).resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ProjectContextError("Не вдалося визначити шлях.") from exc
 
     if candidate != resolved_root and resolved_root not in candidate.parents:
-        raise ProjectContextError("Path is outside the project root.")
+        raise ProjectContextError("Шлях перебуває поза коренем проєкту.")
 
     relative = candidate.relative_to(resolved_root)
     _reject_excluded_relative_path(relative)
     return candidate
 
 
-def project_map(project_root: str | None = None, max_files: int = 400) -> dict[str, Any]:
-    root = resolve_project_root(project_root)
+def project_map(
+    project_root: str | None = None,
+    max_files: int = 400,
+    *,
+    access_config: McpAccessConfig | None = None,
+) -> dict[str, Any]:
+    root = resolve_project_root(project_root, access_config=access_config)
     limit = _bounded_int(max_files, default=400, minimum=1, maximum=2000)
     files: list[dict[str, Any]] = []
     extension_counts: Counter[str] = Counter()
-    skipped_after_limit = 0
+    budget = _ScanBudget(max_total_bytes=MAX_OPERATION_SCAN_BYTES)
 
-    for path in _iter_safe_files(root):
+    for path in _iter_safe_files(root, budget=budget):
         if len(files) >= limit:
-            skipped_after_limit += 1
-            continue
+            budget.truncated = True
+            break
         relative = path.relative_to(root)
         extension = path.suffix.lower()
         extension_counts[extension or "[none]"] += 1
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
         files.append(
             {
-                "path": _relative_string(relative),
-                "size": path.stat().st_size,
+                "path": redact_sensitive_text(_relative_string(relative)),
+                "size": size,
                 "kind": _guess_file_kind(path),
                 "extension": extension,
             }
@@ -136,8 +223,9 @@ def project_map(project_root: str | None = None, max_files: int = 400) -> dict[s
         "project_root": ".",
         "max_files": limit,
         "file_count": len(files),
-        "truncated": skipped_after_limit > 0,
-        "skipped_after_limit": skipped_after_limit,
+        "truncated": budget.truncated,
+        "skipped_after_limit": 1 if budget.truncated and len(files) >= limit else 0,
+        "visited_entries": budget.visited_entries,
         "extension_counts": dict(sorted(extension_counts.items())),
         "files": files,
     }
@@ -149,8 +237,10 @@ def read_file_excerpt(
     start_line: int = 1,
     end_line: int | None = None,
     max_chars: int = 12000,
+    *,
+    access_config: McpAccessConfig | None = None,
 ) -> dict[str, Any]:
-    root = resolve_project_root(project_root)
+    root = resolve_project_root(project_root, access_config=access_config)
     file_path = safe_project_path(root, path)
     _ensure_safe_text_file(root, file_path)
 
@@ -161,10 +251,11 @@ def read_file_excerpt(
         requested_end = _bounded_int(end_line, default=start, minimum=start, maximum=1_000_000)
 
     lines = _read_text_lines(file_path)
+    redacted_lines = redact_sensitive_lines(lines)
     total_lines = len(lines)
     stop = requested_end if requested_end is not None else min(total_lines, start + 199)
     stop = min(stop, total_lines)
-    selected = lines[start - 1 : stop] if start <= total_lines else []
+    selected = redacted_lines[start - 1 : stop] if start <= total_lines else []
     content, included_lines, char_truncated = _join_bounded_lines(selected, char_limit)
     end = start + included_lines - 1 if included_lines else min(stop, total_lines)
     truncated = char_truncated
@@ -189,32 +280,42 @@ def grep_project(
     case_sensitive: bool = False,
     regex: bool = False,
     context_lines: int = 0,
+    *,
+    access_config: McpAccessConfig | None = None,
+    _max_total_bytes: int = MAX_OPERATION_SCAN_BYTES,
+    _max_entries: int = MAX_TRAVERSAL_ENTRIES,
 ) -> dict[str, Any]:
     if not query:
-        raise ProjectContextError("Search query must not be empty.")
+        raise ProjectContextError("Пошуковий запит не може бути порожнім.")
+    if len(query) > MAX_SEARCH_QUERY_CHARS:
+        raise ProjectContextError("Пошуковий запит перевищує ліміт довжини MCP.")
 
-    root = resolve_project_root(project_root)
+    root = resolve_project_root(project_root, access_config=access_config)
     match_limit = _bounded_int(max_matches, default=50, minimum=1, maximum=500)
     context_limit = _bounded_int(context_lines, default=0, minimum=0, maximum=5)
     flags = 0 if case_sensitive else re.IGNORECASE
 
     if regex:
+        _validate_regex_query(query)
         try:
             pattern = re.compile(query, flags)
         except re.error as exc:
-            raise ProjectContextError(f"Invalid regex: {exc}") from exc
+            raise ProjectContextError("Некоректний regex.") from exc
     else:
         pattern = None
         needle = query if case_sensitive else query.lower()
 
     matches: list[dict[str, Any]] = []
     total_matches = 0
+    budget = _ScanBudget(max_total_bytes=_max_total_bytes, max_entries=_max_entries)
 
-    for path in _iter_safe_files(root):
+    for path in _iter_safe_files(root, budget=budget):
         lines = _read_text_lines(path)
+        redacted_lines = redact_sensitive_lines(lines)
         for index, line in enumerate(lines):
             haystack = line if case_sensitive else line.lower()
-            is_match = bool(pattern.search(line)) if pattern else needle in haystack
+            regex_line = line[:MAX_REGEX_LINE_CHARS] if pattern else line
+            is_match = bool(pattern.search(regex_line)) if pattern else needle in haystack
             if not is_match:
                 continue
 
@@ -223,34 +324,42 @@ def grep_project(
                 continue
 
             item: dict[str, Any] = {
-                "path": _relative_string(path.relative_to(root)),
+                "path": redact_sensitive_text(_relative_string(path.relative_to(root))),
                 "line_number": index + 1,
-                "line": line.rstrip("\n"),
+                "line": redacted_lines[index].rstrip("\n"),
             }
             if context_limit:
                 before_start = max(0, index - context_limit)
                 after_stop = min(len(lines), index + context_limit + 1)
                 item["context"] = [
-                    {"line_number": i + 1, "line": lines[i].rstrip("\n")}
+                    {"line_number": i + 1, "line": redacted_lines[i].rstrip("\n")}
                     for i in range(before_start, after_stop)
                     if i != index
                 ]
             matches.append(item)
 
     return {
-        "query": query,
+        "query": redact_sensitive_text(query),
         "regex": regex,
         "case_sensitive": case_sensitive,
         "max_matches": match_limit,
         "match_count": len(matches),
         "total_matches": total_matches,
-        "truncated": total_matches > len(matches),
+        "truncated": total_matches > len(matches) or budget.truncated,
+        "scan_truncated": budget.truncated,
+        "scanned_files": budget.scanned_files,
+        "scanned_bytes": budget.scanned_bytes,
         "matches": matches,
     }
 
 
-def git_status_summary(project_root: str | None = None, max_chars: int = 12000) -> dict[str, Any]:
-    root = resolve_project_root(project_root)
+def git_status_summary(
+    project_root: str | None = None,
+    max_chars: int = 12000,
+    *,
+    access_config: McpAccessConfig | None = None,
+) -> dict[str, Any]:
+    root = resolve_project_root(project_root, access_config=access_config)
     char_limit = _bounded_int(max_chars, default=12000, minimum=500, maximum=50000)
     commands = {
         "status_short": ["git", "status", "--short"],
@@ -273,17 +382,22 @@ def git_status_summary(project_root: str | None = None, max_chars: int = 12000) 
                 timeout=5,
                 check=False,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except subprocess.TimeoutExpired:
             outputs[name] = ""
-            errors[name] = str(exc)
+            errors[name] = "Перевищено час очікування команди Git."
+            is_git_repo = False
+            continue
+        except OSError:
+            outputs[name] = ""
+            errors[name] = "Не вдалося запустити команду Git."
             is_git_repo = False
             continue
 
-        stdout = _truncate_text(result.stdout, char_limit)
-        stderr = _truncate_text(result.stderr, 2000)
+        stdout = redact_sensitive_text(_truncate_text(result.stdout, char_limit))
+        stderr = redact_sensitive_text(_truncate_text(result.stderr, 2000))
         outputs[name] = stdout
         if result.returncode != 0:
-            errors[name] = stderr or f"git exited with status {result.returncode}"
+            errors[name] = stderr or f"git завершив роботу зі статусом {result.returncode}"
             is_git_repo = False
 
     return {
@@ -300,14 +414,21 @@ def task_brief(
     project_root: str | None = None,
     max_terms: int = 8,
     max_matches_per_term: int = 8,
+    *,
+    access_config: McpAccessConfig | None = None,
 ) -> dict[str, Any]:
     if not task or not task.strip():
-        raise ProjectContextError("Task must not be empty.")
+        raise ProjectContextError("Опис задачі не може бути порожнім.")
+    if len(task) > MAX_TASK_CHARS:
+        raise ProjectContextError("Опис задачі перевищує ліміт довжини MCP.")
 
-    root = resolve_project_root(project_root)
+    root = resolve_project_root(project_root, access_config=access_config)
     term_limit = _bounded_int(max_terms, default=8, minimum=1, maximum=20)
     matches_limit = _bounded_int(max_matches_per_term, default=8, minimum=1, maximum=50)
-    terms = _extract_terms(task, term_limit)
+    redacted_task = redact_sensitive_text(task)
+    terms = _extract_terms(redacted_task, term_limit)
+    per_term_scan_bytes = max(1, MAX_OPERATION_SCAN_BYTES // max(1, len(terms)))
+    per_term_entries = max(1, MAX_TRAVERSAL_ENTRIES // max(1, len(terms)))
     candidate_files: dict[str, dict[str, Any]] = {}
     term_results: list[dict[str, Any]] = []
 
@@ -319,6 +440,9 @@ def task_brief(
             case_sensitive=False,
             regex=False,
             context_lines=0,
+            access_config=access_config,
+            _max_total_bytes=per_term_scan_bytes,
+            _max_entries=per_term_entries,
         )
         term_results.append(
             {
@@ -339,8 +463,8 @@ def task_brief(
         candidate["lines"] = sorted(set(candidate["lines"]))[:20]
 
     return {
-        "task": task,
-        "warning": "Use this as hints only. Verify files directly before editing.",
+        "task": redacted_task,
+        "warning": "Використовуй це лише як підказки. Перевіряй файли безпосередньо перед редагуванням.",
         "terms": terms,
         "candidate_files": candidates[:20],
         "term_results": term_results,
@@ -351,19 +475,29 @@ def memory_read(
     name: str = "facts.md",
     project_root: str | None = None,
     max_chars: int = 12000,
+    *,
+    access_config: McpAccessConfig | None = None,
 ) -> dict[str, Any]:
-    root = resolve_project_root(project_root)
+    root = resolve_project_root(project_root, access_config=access_config)
     memory_path = _memory_file_path(root, name)
     char_limit = _bounded_int(max_chars, default=12000, minimum=200, maximum=50000)
 
     if not memory_path.exists():
         return {"name": name, "content": "", "exists": False, "truncated": False}
 
-    content = memory_path.read_text(encoding="utf-8", errors="replace")
-    truncated = len(content) > char_limit
+    try:
+        if memory_path.stat().st_size > MAX_SCAN_FILE_BYTES:
+            raise ProjectContextError("Файл пам'яті перевищує ліміт розміру MCP.")
+        content = memory_path.read_text(encoding="utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ProjectContextError("Файл пам'яті не є коректним текстом UTF-8.") from exc
+    except OSError as exc:
+        raise ProjectContextError("Не вдалося прочитати файл пам'яті.") from exc
+    redacted_content = "".join(redact_sensitive_lines(content.splitlines(keepends=True)))
+    truncated = len(redacted_content) > char_limit
     return {
         "name": name,
-        "content": content[:char_limit],
+        "content": redacted_content[:char_limit],
         "exists": True,
         "truncated": truncated,
     }
@@ -374,20 +508,29 @@ def memory_append(
     name: str = "task_history.md",
     project_root: str | None = None,
     source: str = "mcp_client",
+    *,
+    access_config: McpAccessConfig | None = None,
 ) -> dict[str, Any]:
     if not text or not text.strip():
-        raise ProjectContextError("Memory text must not be empty.")
+        raise ProjectContextError("Текст нотатки пам'яті не може бути порожнім.")
 
-    root = resolve_project_root(project_root)
+    config = access_config or load_mcp_access_config()
+    if not config.memory_writes_allowed:
+        raise ProjectContextError("Запис до пам'яті вимкнений для цього профілю MCP.")
+
+    root = resolve_project_root(project_root, access_config=config)
     memory_path = _memory_file_path(root, name)
     bounded_text = _truncate_text(text.strip(), 4000)
     bounded_source = re.sub(r"[^A-Za-z0-9_.:-]+", "_", source.strip() or "mcp_client")[:80]
     timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     note = f"\n## {timestamp} source={bounded_source}\n\n{bounded_text}\n"
 
-    memory_path.parent.mkdir(mode=0o700, exist_ok=True)
-    with memory_path.open("a", encoding="utf-8") as handle:
-        handle.write(note)
+    try:
+        memory_path.parent.mkdir(mode=0o700, exist_ok=True)
+        with memory_path.open("a", encoding="utf-8") as handle:
+            handle.write(note)
+    except OSError as exc:
+        raise ProjectContextError("Не вдалося додати нотатку до файлу пам'яті MCP.") from exc
 
     return {
         "name": name,
@@ -397,39 +540,59 @@ def memory_append(
     }
 
 
-def _iter_safe_files(root: Path):
+def _iter_safe_files(root: Path, *, budget: _ScanBudget):
     resolved_root = root.resolve()
     for current_root, dir_names, file_names in os.walk(root):
         current_path = Path(current_root)
         relative_root = current_path.relative_to(root)
+        budget.visited_entries += 1
+        if budget.visited_entries > budget.max_entries:
+            budget.truncated = True
+            return
         dir_names[:] = [
             name
             for name in sorted(dir_names)
             if not _is_excluded_relative_path(relative_root / name)
         ]
         for file_name in sorted(file_names):
+            budget.visited_entries += 1
+            if budget.visited_entries > budget.max_entries:
+                budget.truncated = True
+                return
             relative = relative_root / file_name
             if _is_excluded_relative_path(relative):
                 continue
             path = current_path / file_name
             try:
                 resolved_path = path.resolve()
-            except OSError:
+                is_file = path.is_file()
+                size = path.stat().st_size
+            except (OSError, RuntimeError):
                 continue
             if resolved_path != resolved_root and resolved_root not in resolved_path.parents:
                 continue
-            if not path.is_file() or not _is_likely_text_file(path):
+            if not is_file or size > MAX_SCAN_FILE_BYTES or not _is_likely_text_file(path):
                 continue
+            if budget.scanned_bytes + size > budget.max_total_bytes:
+                budget.truncated = True
+                return
+            budget.scanned_files += 1
+            budget.scanned_bytes += size
             yield path
 
 
 def _ensure_safe_text_file(root: Path, path: Path) -> None:
     if not path.exists() or not path.is_file():
-        raise ProjectContextError("Path is not a readable file.")
+        raise ProjectContextError("Шлях не вказує на доступний для читання файл.")
     relative = path.relative_to(root)
     _reject_excluded_relative_path(relative)
+    try:
+        if path.stat().st_size > MAX_SCAN_FILE_BYTES:
+            raise ProjectContextError("Файл перевищує ліміт розміру MCP.")
+    except OSError as exc:
+        raise ProjectContextError("Не вдалося перевірити файл.") from exc
     if not _is_likely_text_file(path):
-        raise ProjectContextError("File is not an allowed text file.")
+        raise ProjectContextError("Файл не належить до дозволених текстових файлів.")
 
 
 def _is_likely_text_file(path: Path) -> bool:
@@ -457,9 +620,9 @@ def _read_text_lines(path: Path) -> list[str]:
     try:
         return path.read_text(encoding="utf-8", errors="strict").splitlines(keepends=True)
     except UnicodeDecodeError as exc:
-        raise ProjectContextError("File is not valid UTF-8 text.") from exc
+        raise ProjectContextError("Файл не є коректним текстом UTF-8.") from exc
     except OSError as exc:
-        raise ProjectContextError(f"Could not read file: {exc}") from exc
+        raise ProjectContextError("Не вдалося прочитати файл.") from exc
 
 
 def _join_bounded_lines(lines: list[str], max_chars: int) -> tuple[str, int, bool]:
@@ -482,20 +645,29 @@ def _join_bounded_lines(lines: list[str], max_chars: int) -> tuple[str, int, boo
 
 def _is_excluded_relative_path(relative: Path) -> bool:
     parts = relative.parts
-    return any(part in EXCLUDED_NAMES or part == MEMORY_DIR_NAME for part in parts) or relative.suffix.lower() in EXCLUDED_SUFFIXES
+    if any(part.casefold() in EXCLUDED_NAMES or part == MEMORY_DIR_NAME for part in parts):
+        return True
+    name = relative.name.casefold()
+    if name.endswith(SAFE_SECRET_EXAMPLE_SUFFIXES):
+        return False
+    if name.startswith(".env.") or name in SECRET_FILE_NAMES:
+        return True
+    if name.startswith(("credentials.", "secrets.", "service-account.")):
+        return True
+    return relative.suffix.lower() in EXCLUDED_SUFFIXES
 
 
 def _reject_excluded_relative_path(relative: Path) -> None:
     if _is_excluded_relative_path(relative):
-        raise ProjectContextError("Path is excluded from MCP project context.")
+        raise ProjectContextError("Шлях виключено з контексту MCP-проєкту.")
 
 
 def _memory_file_path(root: Path, name: str) -> Path:
     if name not in ALLOWED_MEMORY_FILES:
-        raise ProjectContextError("Unsupported memory file name.")
+        raise ProjectContextError("Непідтримувана назва файлу пам'яті.")
     memory_path = (root / MEMORY_DIR_NAME / name).resolve()
     if root not in memory_path.parents:
-        raise ProjectContextError("Memory path is outside the project root.")
+        raise ProjectContextError("Шлях пам'яті перебуває поза коренем проєкту.")
     return memory_path
 
 
@@ -537,6 +709,7 @@ def _extract_terms(task: str, max_terms: int) -> list[str]:
         "from",
         "implement",
         "into",
+        "redacted",
         "the",
         "this",
         "with",
@@ -556,3 +729,16 @@ def _extract_terms(task: str, max_terms: int) -> list[str]:
 
 def _relative_string(path: Path) -> str:
     return path.as_posix() if path.as_posix() != "." else "."
+
+
+def _validate_regex_query(query: str) -> None:
+    if len(query) > MAX_REGEX_PATTERN_CHARS:
+        raise ProjectContextError("Regex-запит перевищує ліміт довжини MCP.")
+    if re.search(r"\\[1-9]", query):
+        raise ProjectContextError("Зворотні посилання regex не підтримуються.")
+    if re.search(r"\((?:[^()]|\\.)*[+*?{][^()]*\)\s*[+*?{]", query):
+        raise ProjectContextError("Вкладене повторення regex не підтримується.")
+    if re.search(r"\((?:[^()]|\\.)*\|(?:[^()]|\\.)*\)\s*[+*?{]", query):
+        raise ProjectContextError("Повторювана альтернація regex не підтримується.")
+    if re.search(r"(?:\.\*){2,}|(?:\.\+){2,}", query):
+        raise ProjectContextError("Повторюваний wildcard regex не підтримується.")

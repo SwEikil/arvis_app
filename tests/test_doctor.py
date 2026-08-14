@@ -151,6 +151,23 @@ class DoctorTests(unittest.TestCase):
 
         self.assertFalse(any(check.title == "Unknown local env keys are present" for check in checks))
 
+    def test_mcp_access_settings_are_known_env_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / ".env.example").write_text("ARVIS_MCP_PROFILE=codex\n", encoding="utf-8")
+
+            checks = doctor.check_local_config(
+                root,
+                {
+                    "ARVIS_MCP_PROFILE": "codex",
+                    "ARVIS_MCP_PROJECT_ROOT": "/path/to/arvis",
+                    "ARVIS_MCP_ALLOWED_ROOTS": "/path/to/arvis",
+                },
+                doctor.DoctorOptions(verbose=True),
+            )
+
+        self.assertFalse(any(check.title == "Unknown local env keys are present" for check in checks))
+
     def test_fix_does_not_overwrite_existing_file_at_safe_dir_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

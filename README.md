@@ -4,7 +4,7 @@ Arvis — локальний консольний AI-асистент для Lin
 desktop actions, діагностика та контрольовані browser-сценарії. Проєкт
 розвивається як надійний інструмент для власної машини, а не як автономний бот.
 
-## Status
+## Стан
 
 Поточний public baseline — **Arvis v0.3.1**.
 
@@ -16,7 +16,7 @@ desktop actions, діагностика та контрольовані browser-
 Номери на кшталт Browser Observer schema v1 — це версії окремих форматів і
 контрактів, а не версія всього Arvis.
 
-## What Arvis is
+## Що таке Arvis
 
 Arvis працює локально у terminal REPL, надсилає діалог до Ollama `/api/chat` і
 може перетворювати явні або природні команди на вузькі whitelisted actions.
@@ -33,7 +33,7 @@ Arvis працює локально у terminal REPL, надсилає діал�
 
 Такий поділ дає змогу тестувати кожен safety boundary окремо.
 
-## Current capabilities
+## Поточні можливості
 
 - Rich REPL-чат із локальною Ollama-моделлю.
 - Активна історія до 40 повідомлень і мінімальний reload state.
@@ -49,13 +49,15 @@ Arvis працює локально у terminal REPL, надсилає діал�
 - Media, volume, app/site launch і Minecraft Server Manager.
 - Experimental Browser Vision Agent для одного вузького whitelisted demo task.
 - Observation-only Browser Observer з JSONL events і in-process watcher lifecycle.
-- Arvis MCP Context Servant як компактний fact helper для coding agents.
+- Arvis MCP Context Servant як компактний stdio-сервіс фактів з ізоляцією
+  коренів проєктів, окремими профілями доступу `codex` і read-only `chatgpt`,
+  а також обмеженою read-only перевіркою OS/RPM/Plasma/Qt/QML.
 
-`session_summary` поки є placeholder: старий контекст обрізається, але rolling
-summary ще не генерується. `MEMORY_INTENT` парситься і показується, проте не
-створює довготривалу user memory.
+`session_summary` підтримує валідоване rolling-стиснення активної історії.
+`MEMORY_INTENT` парситься і показується, проте ще не створює окрему довготривалу
+пам'ять користувача.
 
-## Quick start
+## Швидкий старт
 
 Потрібен Python 3.11+ та локальний Ollama з доступною chat-моделлю. За
 замовчуванням Arvis використовує модель `arvis`; іншу можна задати через
@@ -81,7 +83,7 @@ voice, browser і Minecraft можливостей залишаться disabled
 
 Повна інструкція: [`docs/getting_started.md`](docs/getting_started.md).
 
-## Safety model
+## Модель безпеки
 
 - **Local-first.** Основний runtime і дані працюють на машині користувача.
 - **Dry-run by default.** Новий `CommandRouter` стартує з `dry_run=True`.
@@ -92,6 +94,12 @@ voice, browser і Minecraft можливостей залишаться disabled
 - **Public observer = eyes/events.** Він може detect, emit, log і notify.
 - **Private extension = hands/actions.** Особисті click/keypress сценарії мають
   жити лише в ignored local extensions, поза public code path.
+- **Доступ MCP визначається профілем.** Локальні корені та вибір профілю MCP
+  зберігаються лише в ignored `.env`/`.env.local`; `chatgpt` без явного списку
+  дозволених коренів працює fail-closed.
+- **System MCP лише спостерігає.** Він має тільки фіксовані read-only запити до
+  хоста, пакунків і QML: без shell, `sudo`, install/remove/update, оновлення
+  репозиторіїв або запуску GUI.
 
 Arvis не виконує raw shell із відповіді моделі, не приймає arbitrary URL для
 browser tasks і не обходить login, CAPTCHA, payment, download або permission
@@ -100,7 +108,7 @@ flows.
 Докладніше: [`docs/architecture.md`](docs/architecture.md) і
 [`ROADMAP.md`](ROADMAP.md).
 
-## Common commands
+## Основні команди
 
 | Команда | Що робить |
 | --- | --- |
@@ -130,7 +138,7 @@ flows.
 
 Повний довідник: [`docs/commands.md`](docs/commands.md).
 
-## Architecture overview
+## Огляд архітектури
 
 ```text
 user text
@@ -151,7 +159,7 @@ observe → detect → emit structured event → log/notify
 Повна карта модулів, runtime state та memory limitations:
 [`docs/architecture.md`](docs/architecture.md).
 
-## Documentation
+## Документація
 
 - [`docs/README.md`](docs/README.md) — індекс усієї документації.
 - [`docs/getting_started.md`](docs/getting_started.md) — установка й перший запуск.
@@ -169,7 +177,7 @@ observe → detect → emit structured event → log/notify
   coding agents.
 - [`docs/development.md`](docs/development.md) — тести, CI і правила розробки.
 
-## Development
+## Розробка
 
 Основні перевірки з project root:
 
@@ -186,10 +194,10 @@ Minecraft server або optional heavy dependencies. Межі зовнішніх
 
 Докладніше: [`docs/development.md`](docs/development.md) та [`AGENTS.md`](AGENTS.md).
 
-## Roadmap
+## План розвитку
 
-Наступний великий напрям — **Context & Memory Core**: rolling conversation
-summary, окрема user memory, Memory Router, relevant context builder, керування
-пам’яттю та privacy filtering.
+Наступний великий напрям — **Context & Memory Core**: окрема пам'ять користувача,
+Memory Router, побудова релевантного контексту, керування пам'яттю та privacy
+filtering. Rolling conversation summary уже реалізований.
 
 Без дат і обіцянок релізів: [`ROADMAP.md`](ROADMAP.md).
