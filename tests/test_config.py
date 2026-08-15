@@ -20,6 +20,16 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(reloaded.ARVIS_MODEL, "arvis")
         self.assertFalse(reloaded.ARVIS_BROWSER_OBSERVER_HEADFUL)
         self.assertIsNone(reloaded.get_minecraft_server_config())
+        self.assertEqual(reloaded.get_system_metrics_storage_path(environ={}), "/")
+
+    def test_system_metrics_storage_path_uses_explicit_local_config(self) -> None:
+        configured = "/configured/filesystem"
+
+        result = config.get_system_metrics_storage_path(
+            environ={"ARVIS_SYSTEM_METRICS_STORAGE_PATH": f"  {configured}  "}
+        )
+
+        self.assertEqual(result, configured)
 
     def test_browser_observer_headful_env_is_boolean(self) -> None:
         with patch.dict(os.environ, {"ARVIS_BROWSER_OBSERVER_HEADFUL": "true"}, clear=True):

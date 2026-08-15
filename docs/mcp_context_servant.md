@@ -39,7 +39,7 @@ Standalone server спочатку читає явно задане середо
 
 ## Профілі доступу та інструменти
 
-- `codex` — профіль сумісності, який публікує всі чотирнадцять інструментів.
+- `codex` — профіль сумісності, який публікує всі п'ятнадцять інструментів.
   Якщо список дозволених коренів не налаштований, доступ обмежується
   `ARVIS_MCP_PROJECT_ROOT`, а за відсутності цієї змінної — робочим каталогом
   сервера.
@@ -58,6 +58,8 @@ Standalone server спочатку читає явно задане середо
 - `memory_read` — обмежене читання з `.arvis_mcp_memory/`.
 - `system_info` — OS, architecture, kernel, desktop/session, Plasma/Qt, atomic
   status і підтримувані backend перевірки пакунків без ідентифікації машини.
+- `system_metrics` — один обмежений best-effort snapshot завантаження CPU,
+  пам'яті, NVIDIA GPU, кореневого сховища й uptime без ідентифікації машини.
 - `binary_exists` — пошук executable за назвою без його запуску.
 - `package_installed` — точний пошук у базі RPM хоста.
 - `package_info` — дані про встановлений пакунок і, де підтримується, його
@@ -77,7 +79,7 @@ Standalone server спочатку читає явно задане середо
 
 | Клас інструментів | Read-only | Destructive | Idempotent | Open world |
 | --- | --- | --- | --- | --- |
-| Тринадцять інструментів читання | `true` | `false` | `true` | `false` |
+| Чотирнадцять інструментів читання | `true` | `false` | `true` | `false` |
 | `memory_append` | `false` | `false` | `false` | `false` |
 
 Усі поточні інструменти читання мають `openWorldHint=false`. Зокрема,
@@ -97,6 +99,7 @@ Standalone server спочатку читає явно задане середо
 | Інструмент | Вхідні дані та ліміти | Основний результат | Контрольовані випадки недоступності |
 | --- | --- | --- | --- |
 | `system_info` | без аргументів | вибрані факти про OS/runtime і можливості backend | опційні значення Plasma/Qt дорівнюють `null` |
+| `system_metrics` | без аргументів; один snapshot із коротким CPU sampling window | CPU usage/load/temperature, RAM/swap, список NVIDIA GPU, використання логічного root storage target, uptime, стани backend і warning-коди | недоступні backend або окремі hardware metrics стають `null`/порожнім списком і не скасовують доступні секції |
 | `binary_exists` | назва executable, до 128 символів | `exists`, шлях з урахуванням privacy | некоректна назва |
 | `package_installed` | точна назва RPM-пакунка, до 128 символів | installed/version/architecture/summary | RPM недоступний, timeout, помилка parser |
 | `package_info` | точна назва RPM-пакунка, до 128 символів | встановлені дані та наявність у кешованому репозиторії | пакунок не знайдено, кеш недоступний; результат лише з установленими даними може бути частковим |
@@ -108,6 +111,66 @@ Standalone server спочатку читає явно задане середо
 `backend_unavailable`, `executable_unavailable`, `package_not_found`, `timeout`,
 `repository_metadata_unavailable` і `parser_failure`. Межа протоколу не повертає
 Python traceback.
+
+### Snapshot системних метрик
+
+`system_info` лишається невеликим інструментом статичних фактів про OS/runtime.
+Поточне навантаження відокремлене в `system_metrics`; виклик не запускає daemon
+чи monitoring loop і повертає лише один snapshot:
+
+```text
+cpu
+  usage_percent, logical_cpus, load.{1m,5m,15m}, temperature_c
+memory
+  total_bytes, used_bytes, available_bytes, free_bytes, used_percent
+swap
+  total_bytes, used_bytes, free_bytes, used_percent
+gpu[]
+  vendor, model, utilization_percent, temperature_c, power_w, power_limit_w,
+  vram_total_bytes, vram_used_bytes, vram_free_bytes, vram_used_percent
+storage.root
+  total_bytes, used_bytes, free_bytes, used_percent
+uptime_seconds
+backends, warnings
+```
+
+RAM, swap, VRAM і сховище повертаються в bytes. Нульове значення метрики не
+змішується з недоступністю: unsupported або нерозпізнане поле має `null`.
+`backends` окремо показує доступність фіксованих джерел, а `warnings` містить
+лише короткі стабільні коди без stderr чи traceback. Відмова одного джерела не
+скасовує інші секції результату.
+
+Джерела даних навмисно вузькі й read-only:
+
+- CPU usage — дві обмежені вибірки aggregate-рядка `/proc/stat` із коротким
+  контрольованим інтервалом; load average — локальний OS interface.
+- RAM і swap — тільки дозволені числові поля `/proc/meminfo`; uptime — перше
+  числове поле `/proc/uptime`.
+- CPU temperature — bounded scan CPU-specific driver names у
+  `/sys/class/hwmon`; неідентифіковані hardware sensors не вгадуються.
+- NVIDIA — довірений системний `nvidia-smi` з фіксованим
+  `--query-gpu=name,utilization.gpu,temperature.gpu,power.draw,power.limit,memory.total,memory.used,memory.free`
+  і CSV `noheader,nounits`. Підтримується кілька GPU. Якщо executable відсутній,
+  команда завершується помилкою або окреме поле має `N/A`/`Not Supported`,
+  решта snapshot лишається доступною.
+- Сховище — тільки aggregate використання одного локально налаштованого target.
+  За замовчуванням використовується `/`. Якщо Arvis/MCP працює в окремому
+  filesystem namespace або `/` не відповідає host filesystem, користувач може
+  задати абсолютний `ARVIS_SYSTEM_METRICS_STORAGE_PATH` в ignored `.env.local`,
+  `.env` чи environment процесу. Наприклад:
+
+  ```dotenv
+  ARVIS_SYSTEM_METRICS_STORAGE_PATH=/path/to/filesystem
+  ```
+
+  Arvis не вгадує target через перелік mountpoints. Відсутній, relative або
+  недоступний configured path дає `root_storage_unavailable`, не скасовуючи
+  решту snapshot.
+
+`system_metrics` не приймає command, argv, шлях чи URL від клієнта. Він не
+повертає process list, command lines, environment, hostname, username,
+мережеві дані, UUID/serial дисків, configured storage path, перелік mountpoints
+або вміст користувацьких файлів.
 
 ### Backend RPM і rpm-ostree
 
@@ -184,6 +247,8 @@ credentials Tunnel чи токени до tracked коду або приклад
   вимкнений stdin, локальний timeout 5 секунд, timeout репозиторію 12 секунд,
   ліміти stdout 64 KiB і stderr 8 KiB. Ввід моделі потрапляє лише до валідованих
   позицій назви, запиту чи URI та не може додати flags.
+- NVIDIA snapshot використовує той самий fixed-command runner зі строгішими
+  лімітами stdout 32 KiB і stderr 4 KiB; stderr ніколи не повертається клієнту.
 - Перевірка репозиторію працює лише з кешем і не може оновити чи змінити
   metadata/configuration. QML-перевірка читає обмежені файли `qmldir` і не
   приймає шлях файлової системи від клієнта.

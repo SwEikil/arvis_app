@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -167,6 +168,48 @@ class DoctorTests(unittest.TestCase):
             )
 
         self.assertFalse(any(check.title == "Unknown local env keys are present" for check in checks))
+
+    def test_system_metrics_storage_setting_is_known_and_path_stays_private(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            configured = root / "private-user-storage"
+            configured.mkdir()
+            (root / ".env.example").write_text(
+                "# ARVIS_SYSTEM_METRICS_STORAGE_PATH=/path/to/filesystem\n",
+                encoding="utf-8",
+            )
+
+            checks = doctor.check_local_config(
+                root,
+                {"ARVIS_SYSTEM_METRICS_STORAGE_PATH": str(configured)},
+                doctor.DoctorOptions(verbose=True),
+            )
+
+        self.assertFalse(any(check.title == "Unknown local env keys are present" for check in checks))
+        self.assertTrue(
+            any(check.title == "System metrics storage target is available" for check in checks)
+        )
+        self.assertNotIn(str(configured), repr(checks))
+
+    def test_doctor_environment_loads_ignored_env_local_with_expected_precedence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / ".env").write_text(
+                "ARVIS_SYSTEM_METRICS_STORAGE_PATH=/configured/from-env\n",
+                encoding="utf-8",
+            )
+            (root / ".env.local").write_text(
+                "ARVIS_SYSTEM_METRICS_STORAGE_PATH=/configured/from-env-local\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {}, clear=True):
+                env = doctor._load_doctor_environment(root)
+
+        self.assertEqual(
+            env["ARVIS_SYSTEM_METRICS_STORAGE_PATH"],
+            "/configured/from-env-local",
+        )
 
     def test_fix_does_not_overwrite_existing_file_at_safe_dir_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

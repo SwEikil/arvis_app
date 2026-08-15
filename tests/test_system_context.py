@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import system_context
@@ -13,9 +14,11 @@ class FakeRunner:
     def __init__(self, handler=None) -> None:
         self.handler = handler or (lambda argv: CommandResult(returncode=0))
         self.calls: list[list[str]] = []
+        self.call_options: list[tuple[int, int, int]] = []
 
     def __call__(self, argv, timeout, stdout_limit, stderr_limit) -> CommandResult:
         self.calls.append(list(argv))
+        self.call_options.append((timeout, stdout_limit, stderr_limit))
         return self.handler(list(argv))
 
 
@@ -86,6 +89,345 @@ class SystemContextTests(unittest.TestCase):
         self.assertIsNone(result["qt_version"])
         self.assertEqual(result["package_backends"], [])
         self.assertFalse(result["atomic"])
+
+    def test_cpu_usage_parsing_and_snapshot_calculation(self) -> None:
+        proc_stat = self.root / "stat"
+        proc_stat.write_text("cpu  100 0 100 800 0 0 0 0 0 0\n", encoding="utf-8")
+
+        def advance_sample(_interval: float) -> None:
+            proc_stat.write_text("cpu  120 0 110 870 0 0 0 0 0 0\n", encoding="utf-8")
+
+        inspector = self._inspector(
+            FakeRunner(),
+            which_names=(),
+            proc_stat_path=proc_stat,
+            sleep=advance_sample,
+        )
+
+        self.assertEqual(inspector._cpu_usage_percent(), 30.0)
+        self.assertEqual(system_context._parse_cpu_stat("not-cpu 1 2 3 4\n"), None)
+        self.assertIsNone(system_context._calculate_cpu_usage_percent((100, 50), (100, 50)))
+
+    def test_system_metrics_parses_memory_uptime_load_and_root_storage(self) -> None:
+        proc_stat = self.root / "stat"
+        meminfo = self.root / "meminfo"
+        uptime = self.root / "uptime"
+        hwmon = self.root / "hwmon"
+        hwmon.mkdir()
+        proc_stat.write_text("cpu 100 0 100 800 0 0 0 0\n", encoding="utf-8")
+        meminfo.write_text(
+            "MemTotal: 1024 kB\nMemFree: 400 kB\nMemAvailable: 600 kB\n"
+            "SwapTotal: 100 kB\nSwapFree: 75 kB\nPrivateField: 999 kB\n",
+            encoding="utf-8",
+        )
+        uptime.write_text("123.456 99.0\n", encoding="utf-8")
+
+        def advance_sample(_interval: float) -> None:
+            proc_stat.write_text("cpu 120 0 110 870 0 0 0 0\n", encoding="utf-8")
+
+        disk_calls: list[str] = []
+
+        def disk_usage(path: str):
+            disk_calls.append(path)
+            return SimpleNamespace(total=1000, used=400, free=600)
+
+        result = self._inspector(
+            FakeRunner(),
+            which_names=(),
+            proc_stat_path=proc_stat,
+            proc_meminfo_path=meminfo,
+            proc_uptime_path=uptime,
+            hwmon_root=hwmon,
+            sleep=advance_sample,
+            getloadavg=lambda: (1.125, 0.75, 0.5),
+            cpu_count=lambda: 8,
+            disk_usage=disk_usage,
+        ).system_metrics()
+
+        self.assertEqual(result["cpu"]["usage_percent"], 30.0)
+        self.assertEqual(result["cpu"]["logical_cpus"], 8)
+        self.assertEqual(result["cpu"]["load"], {"1m": 1.12, "5m": 0.75, "15m": 0.5})
+        self.assertEqual(result["memory"]["total_bytes"], 1024 * 1024)
+        self.assertEqual(result["memory"]["used_bytes"], 424 * 1024)
+        self.assertEqual(result["memory"]["available_bytes"], 600 * 1024)
+        self.assertEqual(result["memory"]["free_bytes"], 400 * 1024)
+        self.assertEqual(result["memory"]["used_percent"], 41.4)
+        self.assertEqual(result["swap"]["used_bytes"], 25 * 1024)
+        self.assertEqual(result["swap"]["used_percent"], 25.0)
+        self.assertEqual(result["uptime_seconds"], 123.46)
+        self.assertEqual(result["storage"]["root"]["used_percent"], 40.0)
+        self.assertEqual(disk_calls, ["/"])
+
+    def test_system_metrics_uses_configured_absolute_storage_path_without_disclosure(self) -> None:
+        configured = "/configured/storage-target"
+        disk_calls: list[str] = []
+
+        def disk_usage(path: str):
+            disk_calls.append(path)
+            return SimpleNamespace(total=2000, used=500, free=1500)
+
+        result = self._inspector(
+            FakeRunner(),
+            which_names=(),
+            storage_path=configured,
+            disk_usage=disk_usage,
+            cpu_sample_interval=0,
+        ).system_metrics()
+
+        self.assertEqual(disk_calls, [configured])
+        self.assertEqual(
+            result["storage"]["root"],
+            {
+                "total_bytes": 2000,
+                "used_bytes": 500,
+                "free_bytes": 1500,
+                "used_percent": 25.0,
+            },
+        )
+        self.assertNotIn(configured, repr(result))
+
+    def test_system_metrics_rejects_relative_storage_path_without_backend_call(self) -> None:
+        disk_calls: list[str] = []
+
+        result = self._inspector(
+            FakeRunner(),
+            which_names=(),
+            storage_path="relative/storage",
+            disk_usage=lambda path: disk_calls.append(path),
+            cpu_sample_interval=0,
+        ).system_metrics()
+
+        self.assertEqual(disk_calls, [])
+        self.assertEqual(result["storage"]["root"], system_context._empty_storage_metrics())
+        self.assertIn("root_storage_unavailable", result["warnings"])
+
+    def test_system_metrics_missing_storage_path_is_controlled(self) -> None:
+        configured = str(self.root / "missing-storage")
+
+        result = self._inspector(
+            FakeRunner(),
+            which_names=(),
+            storage_path=configured,
+            disk_usage=system_context.shutil.disk_usage,
+            cpu_sample_interval=0,
+        ).system_metrics()
+
+        self.assertEqual(result["storage"]["root"], system_context._empty_storage_metrics())
+        self.assertIn("root_storage_unavailable", result["warnings"])
+        self.assertNotIn(configured, repr(result))
+
+    def test_system_metrics_inaccessible_storage_path_is_controlled(self) -> None:
+        configured = "/configured/inaccessible-storage"
+
+        def inaccessible(_path: str):
+            raise PermissionError("private storage detail")
+
+        result = self._inspector(
+            FakeRunner(),
+            which_names=(),
+            storage_path=configured,
+            disk_usage=inaccessible,
+            cpu_sample_interval=0,
+        ).system_metrics()
+
+        self.assertEqual(result["storage"]["root"], system_context._empty_storage_metrics())
+        self.assertIn("root_storage_unavailable", result["warnings"])
+        self.assertNotIn("private storage detail", repr(result))
+        self.assertNotIn(configured, repr(result))
+
+    def test_system_metrics_disk_usage_error_is_controlled(self) -> None:
+        configured = "/configured/broken-storage"
+
+        def broken_disk_usage(_path: str):
+            raise RuntimeError("private backend detail")
+
+        result = self._inspector(
+            FakeRunner(),
+            which_names=(),
+            storage_path=configured,
+            disk_usage=broken_disk_usage,
+            cpu_sample_interval=0,
+        ).system_metrics()
+
+        self.assertEqual(result["storage"]["root"], system_context._empty_storage_metrics())
+        self.assertIn("root_storage_unavailable", result["warnings"])
+        self.assertNotIn("private backend detail", repr(result))
+        self.assertNotIn(configured, repr(result))
+
+    def test_system_metrics_entrypoint_passes_local_config_to_inspector(self) -> None:
+        configured = "/configured/entrypoint-storage"
+        expected = {"storage": {"root": {"total_bytes": 1}}}
+
+        with patch.object(
+            system_context.config,
+            "get_system_metrics_storage_path",
+            return_value=configured,
+        ), patch.object(system_context, "SystemInspector") as inspector_class:
+            inspector_class.return_value.system_metrics.return_value = expected
+            result = system_context.system_metrics()
+
+        inspector_class.assert_called_once_with(storage_path=configured)
+        self.assertEqual(result, expected)
+
+    def test_cpu_temperature_uses_cpu_hwmon_package_sensor(self) -> None:
+        hwmon = self.root / "hwmon"
+        sensor = hwmon / "hwmon0"
+        sensor.mkdir(parents=True)
+        (sensor / "name").write_text("coretemp\n", encoding="utf-8")
+        (sensor / "temp1_label").write_text("Package id 0\n", encoding="utf-8")
+        (sensor / "temp1_input").write_text("54000\n", encoding="utf-8")
+        (sensor / "temp2_label").write_text("Core 0\n", encoding="utf-8")
+        (sensor / "temp2_input").write_text("61000\n", encoding="utf-8")
+
+        result = self._inspector(FakeRunner(), which_names=(), hwmon_root=hwmon)._cpu_temperature()
+
+        self.assertEqual(result, 54.0)
+
+    def test_cpu_temperature_unavailable_for_non_cpu_or_invalid_sensors(self) -> None:
+        hwmon = self.root / "hwmon"
+        sensor = hwmon / "hwmon0"
+        sensor.mkdir(parents=True)
+        (sensor / "name").write_text("amdgpu\n", encoding="utf-8")
+        (sensor / "temp1_input").write_text("47000\n", encoding="utf-8")
+
+        self.assertIsNone(
+            self._inspector(FakeRunner(), which_names=(), hwmon_root=hwmon)._cpu_temperature()
+        )
+
+    def test_nvidia_metrics_parse_multiple_devices_and_fixed_bounded_command(self) -> None:
+        output = (
+            '"NVIDIA Test, GPU", 12, 43, 48.2, 360, 16384, 2048, 14336\n'
+            "NVIDIA Second GPU, 0, 39, 20, 250, 8192, 1024, 7168\n"
+        )
+        runner = FakeRunner(lambda argv: CommandResult(0, output))
+
+        devices, available, warning = self._inspector(
+            runner, which_names=("nvidia-smi",)
+        )._nvidia_metrics()
+
+        self.assertTrue(available)
+        self.assertIsNone(warning)
+        self.assertEqual(len(devices), 2)
+        self.assertEqual(devices[0]["model"], "NVIDIA Test, GPU")
+        self.assertEqual(devices[0]["vram_total_bytes"], 16384 * 1024 * 1024)
+        self.assertEqual(devices[0]["vram_used_percent"], 12.5)
+        self.assertEqual(
+            runner.calls,
+            [["/usr/bin/nvidia-smi", *system_context._NVIDIA_SMI_ARGS]],
+        )
+        self.assertEqual(
+            runner.call_options,
+            [
+                (
+                    system_context.LOCAL_COMMAND_TIMEOUT_SECONDS,
+                    system_context.NVIDIA_COMMAND_STDOUT_BYTES,
+                    system_context.NVIDIA_COMMAND_STDERR_BYTES,
+                )
+            ],
+        )
+
+    def test_nvidia_metrics_keep_unsupported_field_as_null(self) -> None:
+        runner = FakeRunner(
+            lambda argv: CommandResult(
+                0,
+                "NVIDIA Test GPU, 0, 40, [Not Supported], N/A, 8192, 0, 8192\n",
+            )
+        )
+
+        devices, available, warning = self._inspector(
+            runner, which_names=("nvidia-smi",)
+        )._nvidia_metrics()
+
+        self.assertTrue(available)
+        self.assertEqual(warning, "nvidia_metrics_partial")
+        self.assertIsNone(devices[0]["power_w"])
+        self.assertIsNone(devices[0]["power_limit_w"])
+        self.assertEqual(devices[0]["utilization_percent"], 0.0)
+
+    def test_nvidia_metrics_unavailable_is_controlled(self) -> None:
+        missing = self._inspector(FakeRunner(), which_names=())._nvidia_metrics()
+        self.assertEqual(missing, ([], False, "nvidia_smi_unavailable"))
+
+        runner = FakeRunner(lambda argv: CommandResult(None, timed_out=True))
+        failed = self._inspector(runner, which_names=("nvidia-smi",))._nvidia_metrics()
+        self.assertEqual(failed, ([], False, "nvidia_smi_failed"))
+
+    def test_system_metrics_returns_partial_result_when_one_backend_fails(self) -> None:
+        proc_stat = self.root / "stat"
+        meminfo = self.root / "meminfo"
+        uptime = self.root / "uptime"
+        proc_stat.write_text("cpu 1 0 1 8\n", encoding="utf-8")
+        meminfo.write_text(
+            "MemTotal: 1000 kB\nMemFree: 100 kB\nMemAvailable: 500 kB\n"
+            "SwapTotal: 0 kB\nSwapFree: 0 kB\n",
+            encoding="utf-8",
+        )
+        uptime.write_text("10.0 5.0\n", encoding="utf-8")
+
+        def advance_sample(_interval: float) -> None:
+            proc_stat.write_text("cpu 2 0 2 16\n", encoding="utf-8")
+
+        def broken_load_average():
+            raise OSError("private backend detail")
+
+        result = self._inspector(
+            FakeRunner(),
+            which_names=(),
+            proc_stat_path=proc_stat,
+            proc_meminfo_path=meminfo,
+            proc_uptime_path=uptime,
+            hwmon_root=self.root / "missing-hwmon",
+            sleep=advance_sample,
+            getloadavg=broken_load_average,
+            cpu_count=lambda: 4,
+            disk_usage=lambda path: SimpleNamespace(total=100, used=25, free=75),
+        ).system_metrics()
+
+        self.assertIsNone(result["cpu"]["load"]["1m"])
+        self.assertEqual(result["memory"]["total_bytes"], 1000 * 1024)
+        self.assertEqual(result["uptime_seconds"], 10.0)
+        self.assertEqual(result["storage"]["root"]["used_percent"], 25.0)
+        self.assertIn("load_average_unavailable", result["warnings"])
+        self.assertNotIn("private backend detail", repr(result))
+
+    def test_system_metrics_omits_private_identity_and_process_data(self) -> None:
+        configured = "/configured/private-user/storage-target"
+        result = self._inspector(
+            FakeRunner(),
+            which_names=(),
+            environ={
+                "HOSTNAME": "private-host",
+                "USER": "private-user",
+                "HOME": "/home/private-user",
+            },
+            proc_stat_path=self.root / "missing-stat",
+            proc_meminfo_path=self.os_release,
+            proc_uptime_path=self.root / "missing-uptime",
+            hwmon_root=self.root / "missing-hwmon",
+            sleep=lambda interval: None,
+            getloadavg=lambda: (0.0, 0.0, 0.0),
+            cpu_count=lambda: 1,
+            storage_path=configured,
+            disk_usage=lambda path: SimpleNamespace(total=0, used=0, free=0),
+        ).system_metrics()
+
+        serialized = repr(result).casefold()
+        for forbidden in (
+            "private-host",
+            "private-user",
+            "/home/",
+            "/var/home/",
+            "hostname",
+            "username",
+            "command_line",
+            "argv",
+            "environment",
+            "processes",
+            "mountinfo",
+            "mountpoint",
+            configured.casefold(),
+        ):
+            self.assertNotIn(forbidden, serialized)
 
     def test_binary_exists_reports_system_path_without_executing_it(self) -> None:
         runner = FakeRunner()

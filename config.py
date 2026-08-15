@@ -4,6 +4,7 @@ import os
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 
 from dotenv import load_dotenv
 
@@ -15,6 +16,8 @@ DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
 DEFAULT_ARVIS_MODEL = "arvis"
 DEFAULT_MINECRAFT_SERVER_KEY = "default"
 DEFAULT_MINECRAFT_SERVER_NAME = "Minecraft server"
+DEFAULT_SYSTEM_METRICS_STORAGE_PATH = "/"
+SYSTEM_METRICS_STORAGE_PATH_ENV = "ARVIS_SYSTEM_METRICS_STORAGE_PATH"
 
 
 USER_NAME = os.getenv("USER_NAME", "user")
@@ -47,6 +50,14 @@ def parse_command(value: str | None) -> list[str]:
         return shlex.split(value)
     except ValueError:
         return []
+
+
+def get_system_metrics_storage_path(environ: Mapping[str, str] | None = None) -> str:
+    """Повернути локально налаштований storage target без filesystem probing."""
+
+    env = os.environ if environ is None else environ
+    configured = (env.get(SYSTEM_METRICS_STORAGE_PATH_ENV) or "").strip()
+    return configured or DEFAULT_SYSTEM_METRICS_STORAGE_PATH
 
 
 def get_minecraft_server_config() -> MinecraftServerConfig | None:

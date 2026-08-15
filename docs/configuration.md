@@ -27,14 +27,18 @@ argv із `shell=False`.
 Machine paths лишаються порожніми.
 
 Standalone MCP Context Servant також читає ignored `.env.local` і `.env`, але
-використовує тільки загальні параметри `ARVIS_MCP_*`. Реальні корені проєктів і
+використовує тільки загальні параметри `ARVIS_MCP_*` та
+`ARVIS_SYSTEM_METRICS_STORAGE_PATH`. Реальні корені проєктів, storage target і
 локально вибраний профіль не належать до публічної конфігурації. Повний опис:
 [`mcp_context_servant.md`](mcp_context_servant.md).
 
-Read-only перевірка системи й пакунків не потребує окремих env keys. Backend
-визначається за OS хоста, довіреними executable та ostree boot marker. Пошук у
-репозиторіях працює лише з уже наявним кешем метаданих rpm-ostree і не
-вмикається локальним override.
+`ARVIS_SYSTEM_METRICS_STORAGE_PATH` опційно вибирає один абсолютний filesystem
+path для aggregate storage metrics; стандартне значення — `/`. Це корисно,
+коли `/` усередині runtime namespace MCP не є filesystem хоста. Значення не є
+аргументом MCP, не повертається клієнту й має зберігатися лише в ignored local
+config. Інші read-only backend визначаються за OS хоста, довіреними executable
+та ostree boot marker. Пошук у репозиторіях працює лише з уже наявним кешем
+метаданих rpm-ostree і не вмикається локальним override.
 
 ## Запуск застосунків і сайтів
 

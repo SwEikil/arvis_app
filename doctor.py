@@ -76,6 +76,7 @@ KNOWN_ENV_KEYS = {
     "ARVIS_MCP_PROFILE",
     "ARVIS_MCP_PROJECT_ROOT",
     "ARVIS_MCP_ALLOWED_ROOTS",
+    "ARVIS_SYSTEM_METRICS_STORAGE_PATH",
     "MUSIC_FOLDER",
     "DOWNLOADS_FOLDER",
     "STEAM_COMMAND",
@@ -151,8 +152,7 @@ def doctor_exit_code(checks: list[DoctorCheck], options: DoctorOptions) -> int:
 def run_doctor(options: DoctorOptions | None = None, project_root: Path | None = None) -> list[DoctorCheck]:
     options = options or DoctorOptions()
     root = resolve_project_root(project_root)
-    env_file_values = _read_env_file(root / ".env")
-    env = {**env_file_values, **{key: value for key, value in os.environ.items() if key in KNOWN_ENV_KEYS}}
+    env = _load_doctor_environment(root)
 
     checks: list[DoctorCheck] = []
     checks.extend(check_project_runtime(root, options))
@@ -164,6 +164,16 @@ def run_doctor(options: DoctorOptions | None = None, project_root: Path | None =
     checks.extend(check_storage(root, options))
     checks.extend(check_git_safety(root))
     return checks
+
+
+def _load_doctor_environment(root: Path) -> dict[str, str]:
+    env_file_values = _read_env_file(root / ".env")
+    env_local_values = _read_env_file(root / ".env.local")
+    return {
+        **env_file_values,
+        **env_local_values,
+        **{key: value for key, value in os.environ.items() if key in KNOWN_ENV_KEYS},
+    }
 
 
 def render_text_report(checks: list[DoctorCheck], options: DoctorOptions | None = None) -> str:
@@ -370,8 +380,45 @@ def check_local_config(root: Path, env: dict[str, str], options: DoctorOptions) 
                 )
             )
 
+    checks.extend(_check_system_metrics_storage_config(env))
     checks.extend(_check_minecraft_config(env))
     return checks
+
+
+def _check_system_metrics_storage_config(env: dict[str, str]) -> list[DoctorCheck]:
+    value = env.get("ARVIS_SYSTEM_METRICS_STORAGE_PATH", "").strip()
+    if not value:
+        return [
+            DoctorCheck(
+                "info",
+                "Config",
+                "System metrics storage target uses the default filesystem",
+            )
+        ]
+
+    path = Path(value)
+    if not path.is_absolute():
+        return [
+            DoctorCheck(
+                "warn",
+                "Config",
+                "System metrics storage target must be an absolute path",
+                fix="Set ARVIS_SYSTEM_METRICS_STORAGE_PATH to an absolute local path.",
+            )
+        ]
+
+    try:
+        shutil.disk_usage(path)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return [
+            DoctorCheck(
+                "warn",
+                "Config",
+                "System metrics storage target is unavailable",
+                fix="Update ARVIS_SYSTEM_METRICS_STORAGE_PATH in ignored local config.",
+            )
+        ]
+    return [DoctorCheck("ok", "Config", "System metrics storage target is available")]
 
 
 def check_privacy_safety(root: Path, options: DoctorOptions) -> list[DoctorCheck]:
@@ -1124,6 +1171,7 @@ def _write_safe_env_example(path: Path) -> bool:
                     "# ARVIS_MCP_PROFILE=codex",
                     "# ARVIS_MCP_PROJECT_ROOT=/path/to/arvis",
                     "# ARVIS_MCP_ALLOWED_ROOTS=/path/to/arvis",
+                    "# ARVIS_SYSTEM_METRICS_STORAGE_PATH=/path/to/filesystem",
                     "",
                     "MUSIC_FOLDER=/path/to/music",
                     "DOWNLOADS_FOLDER=/path/to/downloads",

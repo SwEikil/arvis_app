@@ -73,6 +73,7 @@ class McpAccessConfigTests(unittest.TestCase):
 class McpToolMetadataTests(unittest.TestCase):
     READ_ONLY_SYSTEM_TOOLS = {
         "system_info",
+        "system_metrics",
         "binary_exists",
         "package_installed",
         "package_info",
@@ -110,7 +111,7 @@ class McpToolMetadataTests(unittest.TestCase):
             }
             | self.READ_ONLY_SYSTEM_TOOLS,
         )
-        self.assertEqual(len(tools), 14)
+        self.assertEqual(len(tools), 15)
         self.assertTrue(
             all(any("а" <= char.casefold() <= "я" or char.casefold() in "іїєґ" for char in tool.description) for tool in tools.values())
         )
@@ -143,7 +144,7 @@ class McpToolMetadataTests(unittest.TestCase):
             }
             | self.READ_ONLY_SYSTEM_TOOLS,
         )
-        self.assertEqual(len(tools), 13)
+        self.assertEqual(len(tools), 14)
         self.assertNotIn("memory_append", tools)
 
     def test_system_tools_are_read_only_in_both_profiles(self) -> None:
@@ -159,6 +160,15 @@ class McpToolMetadataTests(unittest.TestCase):
                 self.assertEqual(annotations.idempotentHint, True)
                 self.assertEqual(annotations.openWorldHint, False)
 
+    def test_system_metrics_accepts_no_filesystem_path_argument(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module = self._load_server("chatgpt", Path(tmpdir))
+            tools = {tool.name: tool for tool in asyncio.run(module.mcp.list_tools())}
+
+        schema = tools["system_metrics"].inputSchema
+        self.assertEqual(schema.get("properties"), {})
+        self.assertFalse(schema.get("required"))
+
     def test_system_context_errors_keep_safe_error_codes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             module = self._load_server("codex", Path(tmpdir))
@@ -171,6 +181,20 @@ class McpToolMetadataTests(unittest.TestCase):
             result,
             {"ok": False, "error_code": "invalid_input", "error": "Safe message."},
         )
+
+    def test_system_metrics_wrapper_uses_safe_call_result_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module = self._load_server("chatgpt", Path(tmpdir))
+
+        with patch.object(
+            module.system_context,
+            "system_metrics",
+            return_value={"cpu": {"usage_percent": 0.0}, "warnings": []},
+        ):
+            result = module.system_metrics()
+
+        self.assertEqual(result["ok"], True)
+        self.assertEqual(result["cpu"]["usage_percent"], 0.0)
 
     def test_protocol_boundary_hides_unexpected_error_details(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

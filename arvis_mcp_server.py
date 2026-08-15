@@ -174,6 +174,13 @@ def system_info() -> dict[str, Any]:
 
 
 @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
+def system_metrics() -> dict[str, Any]:
+    """Повернути обмежений read-only знімок CPU, пам'яті, GPU, сховища та uptime без приватних ідентифікаційних даних."""
+
+    return _safe_call(system_context.system_metrics)
+
+
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
 def binary_exists(name: str) -> dict[str, Any]:
     """Перевірити валідовану назву executable без його запуску."""
 
