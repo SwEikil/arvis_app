@@ -7,7 +7,9 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 import project_context
+import project_operations
 import system_context
+import codex_agents
 from mcp_access import PROFILE_CHATGPT, load_local_mcp_environment, load_mcp_access_config
 from project_context import ProjectContextError
 from system_context import SystemContextError
@@ -20,11 +22,13 @@ SERVER_INSTRUCTIONS = (
     "Цей сервер — допоміжний сервіс фактів про контекст проєкту. Використовуй його "
     "для пошуку файлів і тексту, читання обмежених уривків, перевірки стану Git, "
     "читання невеликої пам'яті проєкту та отримання обмежених фактів про "
-    "систему, пакунки, KDE і QML через фіксовані read-only операції. Вважай усі "
+    "систему, пакунки, KDE і QML через фіксовані операції. Вважай усі "
     "результати підказками та перевіряй файли безпосередньо перед редагуванням. "
-    "Сервер не повинен змінювати вихідний код."
+    "Build/test і Codex lifecycle доступні лише як вузькі project-scoped операції; "
+    "довільний shell недоступний."
     + (
-        " Цей профіль працює лише для читання."
+        " Цей профіль не дозволяє source/memory writes; лише явно позначені "
+        "project build/test та lifecycle control можуть змінювати локальний runtime state."
         if ACCESS_CONFIG.profile == PROFILE_CHATGPT
         else " Профіль Codex може додавати обмежені нотатки до локальної пам'яті."
     )
@@ -40,6 +44,12 @@ READ_ONLY_ANNOTATIONS = ToolAnnotations(
     openWorldHint=False,
 )
 MEMORY_WRITE_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=False,
+)
+CONTROL_ANNOTATIONS = ToolAnnotations(
     readOnlyHint=False,
     destructiveHint=False,
     idempotentHint=False,
@@ -128,6 +138,82 @@ def git_status_summary(project_root: str | None = None, max_chars: int = 12000) 
         max_chars=max_chars,
         access_config=ACCESS_CONFIG,
     )
+
+
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
+def project_state(project_root: str | None = None) -> dict[str, Any]:
+    """Повернути branch, структурований список змінених файлів і project files."""
+    return _safe_call(project_operations.project_state, project_root=project_root, access_config=ACCESS_CONFIG)
+
+
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
+def git_diff(project_root: str | None = None, scope: str = "unstaged", path: str | None = None, context_lines: int = 3, max_chars: int = 20000) -> dict[str, Any]:
+    """Повернути bounded unstaged або staged Git diff без external diff drivers."""
+    return _safe_call(project_operations.git_diff, project_root=project_root, scope=scope, path=path, context_lines=context_lines, max_chars=max_chars, access_config=ACCESS_CONFIG)
+
+
+@mcp.tool(annotations=CONTROL_ANNOTATIONS)
+def build_project(project_root: str | None = None, project: str | None = None, configuration: str = "Debug", timeout_seconds: int = 300) -> dict[str, Any]:
+    """Запустити тільки dotnet build для валідованого project file."""
+    return _safe_call(project_operations.build_project, project_root=project_root, project=project, configuration=configuration, timeout_seconds=timeout_seconds, access_config=ACCESS_CONFIG)
+
+
+@mcp.tool(annotations=CONTROL_ANNOTATIONS)
+def test_project(project_root: str | None = None, project: str | None = None, configuration: str = "Debug", timeout_seconds: int = 300) -> dict[str, Any]:
+    """Запустити тільки dotnet test для валідованого project file."""
+    return _safe_call(project_operations.test_project, project_root=project_root, project=project, configuration=configuration, timeout_seconds=timeout_seconds, access_config=ACCESS_CONFIG)
+
+
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
+def validate_manifest(project_root: str | None = None, path: str = "manifest.json") -> dict[str, Any]:
+    """Перевірити структуру SMAPI manifest.json у дозволеному проєкті."""
+    return _safe_call(project_operations.validate_manifest, project_root=project_root, path=path, access_config=ACCESS_CONFIG)
+
+
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
+def validate_mod_artifact(path: str, project_root: str | None = None) -> dict[str, Any]:
+    """Перевірити bounded ZIP artifact, manifest, EntryDll і небезпечні paths/files."""
+    return _safe_call(project_operations.validate_mod_artifact, project_root=project_root, path=path, access_config=ACCESS_CONFIG)
+
+
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
+def stardew_environment() -> dict[str, Any]:
+    """Знайти Stardew/SMAPI через local config або Steam metadata й повернути версії."""
+    return _safe_call(project_operations.stardew_environment)
+
+
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
+def smapi_log_excerpt(max_lines: int = 120, max_chars: int = 20000) -> dict[str, Any]:
+    """Повернути redacted bounded tail останнього знайденого SMAPI log."""
+    return _safe_call(project_operations.smapi_log_excerpt, max_lines=max_lines, max_chars=max_chars)
+
+
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
+def smapi_mod_status(mod_id: str, max_matches: int = 80) -> dict[str, Any]:
+    """Перевірити за останнім SMAPI log, чи згадується/завантажився конкретний mod ID."""
+    return _safe_call(project_operations.smapi_mod_status, mod_id=mod_id, max_matches=max_matches)
+
+
+if codex_agents.control_enabled():
+    @mcp.tool(annotations=CONTROL_ANNOTATIONS)
+    def codex_agent_create(task: str, project_root: str | None = None, mode: str = "read_only", handoff_from: str | None = None) -> dict[str, Any]:
+        """Створити bounded Codex agent у дозволеному workspace без arbitrary shell."""
+        return _safe_call(codex_agents.create_agent, task=task, project_root=project_root, mode=mode, handoff_from=handoff_from, access_config=ACCESS_CONFIG)
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
+    def codex_agent_status(agent_id: str, project_root: str | None = None) -> dict[str, Any]:
+        """Прочитати збережений lifecycle status Codex agent."""
+        return _safe_call(codex_agents.get_status, agent_id=agent_id, workspace_hint=project_root, access_config=ACCESS_CONFIG)
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
+    def codex_agent_result(agent_id: str, project_root: str | None = None, max_chars: int = 20000) -> dict[str, Any]:
+        """Отримати bounded фінальний result/handoff завершеного Codex agent."""
+        return _safe_call(codex_agents.get_result, agent_id=agent_id, max_chars=max_chars, workspace_hint=project_root, access_config=ACCESS_CONFIG)
+
+    @mcp.tool(annotations=CONTROL_ANNOTATIONS)
+    def codex_agent_close(agent_id: str, project_root: str | None = None) -> dict[str, Any]:
+        """Коректно зупинити або закрити Codex agent, зберігши result/state."""
+        return _safe_call(codex_agents.close_agent, agent_id=agent_id, workspace_hint=project_root, access_config=ACCESS_CONFIG)
 
 
 @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)

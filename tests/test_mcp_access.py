@@ -81,12 +81,29 @@ class McpToolMetadataTests(unittest.TestCase):
         "plasma_info",
         "qml_module_available",
     }
+    READ_ONLY_PROJECT_TOOLS = {
+        "project_state",
+        "git_diff",
+        "validate_manifest",
+        "validate_mod_artifact",
+        "stardew_environment",
+        "smapi_log_excerpt",
+        "smapi_mod_status",
+    }
+    CONTROL_PROJECT_TOOLS = {"build_project", "test_project"}
+    AGENT_TOOLS = {
+        "codex_agent_create",
+        "codex_agent_status",
+        "codex_agent_result",
+        "codex_agent_close",
+    }
 
     def _load_server(self, profile: str, root: Path):
         env = {
             "ARVIS_MCP_PROFILE": profile,
             "ARVIS_MCP_PROJECT_ROOT": str(root),
             "ARVIS_MCP_ALLOWED_ROOTS": str(root),
+            "ARVIS_CODEX_AGENT_CONTROL_ENABLED": "false",
         }
         with patch.dict(os.environ, env):
             import arvis_mcp_server
@@ -109,9 +126,11 @@ class McpToolMetadataTests(unittest.TestCase):
                 "memory_read",
                 "memory_append",
             }
-            | self.READ_ONLY_SYSTEM_TOOLS,
+            | self.READ_ONLY_SYSTEM_TOOLS
+            | self.READ_ONLY_PROJECT_TOOLS
+            | self.CONTROL_PROJECT_TOOLS,
         )
-        self.assertEqual(len(tools), 15)
+        self.assertEqual(len(tools), 24)
         self.assertTrue(
             all(any("а" <= char.casefold() <= "я" or char.casefold() in "іїєґ" for char in tool.description) for tool in tools.values())
         )
@@ -120,7 +139,7 @@ class McpToolMetadataTests(unittest.TestCase):
             self.assertIsNotNone(annotations)
             self.assertEqual(annotations.openWorldHint, False)
             self.assertEqual(annotations.destructiveHint, False)
-            if name == "memory_append":
+            if name == "memory_append" or name in self.CONTROL_PROJECT_TOOLS:
                 self.assertEqual(annotations.readOnlyHint, False)
                 self.assertEqual(annotations.idempotentHint, False)
             else:
@@ -142,10 +161,24 @@ class McpToolMetadataTests(unittest.TestCase):
                 "task_brief",
                 "memory_read",
             }
-            | self.READ_ONLY_SYSTEM_TOOLS,
+            | self.READ_ONLY_SYSTEM_TOOLS
+            | self.READ_ONLY_PROJECT_TOOLS
+            | self.CONTROL_PROJECT_TOOLS,
         )
-        self.assertEqual(len(tools), 14)
+        self.assertEqual(len(tools), 23)
         self.assertNotIn("memory_append", tools)
+
+    def test_agent_lifecycle_tools_are_opt_in(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with patch.dict(os.environ, {"ARVIS_CODEX_AGENT_CONTROL_ENABLED": "true"}):
+                import arvis_mcp_server
+                module = importlib.reload(arvis_mcp_server)
+                tools = {tool.name: tool for tool in asyncio.run(module.mcp.list_tools())}
+
+        self.assertTrue(self.AGENT_TOOLS.issubset(tools))
+        self.assertFalse(tools["codex_agent_create"].annotations.readOnlyHint)
+        self.assertTrue(tools["codex_agent_status"].annotations.readOnlyHint)
 
     def test_system_tools_are_read_only_in_both_profiles(self) -> None:
         for profile in ("codex", "chatgpt"):

@@ -241,7 +241,8 @@ credentials Tunnel чи токени до tracked коду або приклад
 ## Безпека та ліміти
 
 - Інструменти MCP не редагують вихідний код і не виконують довільні shell
-  commands.
+  commands. Project build/test дозволяють лише фіксовані `dotnet build` і
+  `dotnet test` для project files усередині дозволеного root.
 - Перевірка Git використовує фіксований список команд, `shell=False` і timeout.
 - Системна перевірка використовує фіксовану форму argv, `shell=False`,
   вимкнений stdin, локальний timeout 5 секунд, timeout репозиторію 12 секунд,
@@ -324,3 +325,37 @@ codex mcp add arvis_context \
 
 Credentials OpenAI Secure MCP Tunnel також не належать цьому репозиторію.
 Встановлення та підключення Tunnel не входять до поточного етапу hardening.
+
+## Project verification tools
+
+Project-scoped API доповнює базові `project_map`, `read_file_excerpt`,
+`grep_project` і `git_status_summary` такими операціями:
+
+- `project_state` і `git_diff` повертають структурований changed-file state та
+  bounded staged/unstaged diff;
+- `build_project` і `test_project` запускають лише `dotnet` над валідованим
+  `.sln`/`.csproj`/`.fsproj`/`.vbproj` у дозволеному root;
+- `validate_manifest` і `validate_mod_artifact` перевіряють SMAPI manifest та
+  ZIP, включно з traversal, EntryDll і AI/private artifacts;
+- `stardew_environment`, `smapi_log_excerpt` і `smapi_mod_status` знаходять
+  локальну інсталяцію через config/Steam metadata та повертають тільки bounded,
+  redacted diagnostics.
+
+Machine-specific `dotnet`, Stardew і SMAPI log paths задаються лише через
+ignored local environment. Build/test успадковують мінімальний allowlist env,
+використовують `shell=False`, мають timeout і обмежений output.
+
+## Codex agent lifecycle
+
+Lifecycle tools реєструються лише коли локально ввімкнено
+`ARVIS_CODEX_AGENT_CONTROL_ENABLED=true`. API навмисно складається з чотирьох
+операцій: `codex_agent_create`, `codex_agent_status`, `codex_agent_result` і
+`codex_agent_close`. Деталі CLI ізольовані у worker; клієнт не передає команду,
+flags або executable.
+
+Agent state root обов'язково має бути фізично поза project workspace. Worker
+зберігає request, bounded events, stderr, status і final result локально.
+`handoff_from` приймає тільки terminal predecessor зі збереженим result.
+Predecessor не закривається автоматично: caller спочатку створює successor,
+перевіряє `task_received` та `workspace_accessible`, і лише потім викликає
+`close` для predecessor. Помилка successor не видаляє predecessor state.

@@ -51,8 +51,9 @@ Arvis працює локально у terminal REPL, надсилає діал�
 - Observation-only Browser Observer з JSONL events і in-process watcher lifecycle.
 - Arvis MCP Context Servant як компактний stdio-сервіс фактів з ізоляцією
   коренів проєктів, окремими профілями доступу `codex` і read-only `chatgpt`,
-  а також обмеженою read-only перевіркою OS/runtime, поточних системних
-  метрик, RPM, Plasma, Qt і QML.
+  project-scoped Git/build/test/SMAPI verification, opt-in Codex lifecycle та
+  обмеженою перевіркою OS/runtime, поточних системних метрик, RPM, Plasma, Qt і
+  QML.
 
 `session_summary` підтримує валідоване rolling-стиснення активної історії.
 `MEMORY_INTENT` парситься і показується, проте ще не створює окрему довготривалу

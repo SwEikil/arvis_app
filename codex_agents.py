@@ -1,0 +1,146 @@
+from __future__ import annotations
+
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from mcp_access import McpAccessConfig, path_is_within
+from mcp_security import redact_sensitive_text
+from project_context import ProjectContextError, resolve_project_root
+
+
+MAX_TASK_CHARS = 40_000
+MAX_RESULT_CHARS = 50_000
+AGENT_ID = re.compile(r"^[0-9a-f]{32}$")
+
+
+def control_enabled() -> bool:
+    return os.getenv("ARVIS_CODEX_AGENT_CONTROL_ENABLED", "").strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def create_agent(task: str, project_root: str | None, mode: str = "read_only", handoff_from: str | None = None, *, access_config: McpAccessConfig) -> dict[str, Any]:
+    if not control_enabled():
+        raise ProjectContextError("Codex agent control не ввімкнено локально.")
+    if not task or len(task) > MAX_TASK_CHARS:
+        raise ProjectContextError("Задача агента порожня або перевищує ліміт.")
+    if mode not in {"read_only", "workspace_write"}:
+        raise ProjectContextError("mode має бути read_only або workspace_write.")
+    workspace = resolve_project_root(project_root, access_config=access_config)
+    state_root = _state_root(workspace)
+    parent_result = None
+    if handoff_from:
+        parent = _agent_dir(state_root, handoff_from)
+        parent_status = _read_json(parent / "status.json")
+        if parent_status.get("status") not in {"completed", "failed", "closed"} or not (parent / "result.md").is_file():
+            raise ProjectContextError("Попередній агент ще не має збереженого handoff/result.")
+        parent_result = (parent / "result.md").read_text(encoding="utf-8", errors="replace")[:MAX_RESULT_CHARS]
+    agent_id = uuid.uuid4().hex
+    agent_dir = state_root / agent_id
+    agent_dir.mkdir(mode=0o700)
+    prompt = task if parent_result is None else f"Continue from this preserved handoff/result:\n\n{parent_result}\n\nNew task:\n{task}"
+    request = {"agent_id": agent_id, "workspace": str(workspace), "task": prompt, "mode": mode, "handoff_from": handoff_from, "created_at": _now()}
+    _write_json(agent_dir / "request.json", request)
+    _write_json(agent_dir / "status.json", {"agent_id": agent_id, "status": "initializing", "outcome": None, "pid": None, "created_at": request["created_at"], "updated_at": _now(), "handoff_from": handoff_from})
+    worker = Path(__file__).with_name("codex_agent_worker.py")
+    try:
+        process = subprocess.Popen([sys.executable, str(worker), str(agent_dir / "request.json")], cwd=Path(__file__).parent, shell=False, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+    except OSError as exc:
+        _write_json(agent_dir / "status.json", {"agent_id": agent_id, "status": "failed", "outcome": "launch_failed", "pid": None, "created_at": request["created_at"], "updated_at": _now(), "handoff_from": handoff_from})
+        raise ProjectContextError("Не вдалося запустити Codex agent worker.") from exc
+    # Record the process group immediately so close_agent is safe even before the
+    # worker has completed its own initialization.
+    status = _read_json(agent_dir / "status.json")
+    status.update({"pid": process.pid, "updated_at": _now()})
+    _write_json(agent_dir / "status.json", status)
+    return {"agent_id": agent_id, "status": "initializing", "worker_pid": process.pid, "handoff_from": handoff_from}
+
+
+def get_status(agent_id: str, *, workspace_hint: str | None, access_config: McpAccessConfig) -> dict[str, Any]:
+    state_root = _state_root(resolve_project_root(workspace_hint, access_config=access_config))
+    status = _read_json(_agent_dir(state_root, agent_id) / "status.json")
+    return _public_status(status)
+
+
+def get_result(agent_id: str, max_chars: int = 20_000, *, workspace_hint: str | None, access_config: McpAccessConfig) -> dict[str, Any]:
+    state_root = _state_root(resolve_project_root(workspace_hint, access_config=access_config))
+    agent_dir = _agent_dir(state_root, agent_id)
+    status = _read_json(agent_dir / "status.json")
+    limit = min(max(int(max_chars), 500), MAX_RESULT_CHARS)
+    result_path = agent_dir / "result.md"
+    content = result_path.read_text(encoding="utf-8", errors="replace") if result_path.is_file() else ""
+    return {**_public_status(status), "result": redact_sensitive_text(content[:limit]), "result_available": result_path.is_file(), "truncated": len(content) > limit}
+
+
+def close_agent(agent_id: str, *, workspace_hint: str | None, access_config: McpAccessConfig) -> dict[str, Any]:
+    state_root = _state_root(resolve_project_root(workspace_hint, access_config=access_config))
+    agent_dir = _agent_dir(state_root, agent_id)
+    status_path = agent_dir / "status.json"
+    status = _read_json(status_path)
+    previous = status.get("status")
+    pid = status.get("pid")
+    if previous in {"initializing", "running", "stopping"} and isinstance(pid, int) and pid > 1:
+        status["status"] = "stopping"
+        status["updated_at"] = _now()
+        _write_json(status_path, status)
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except PermissionError as exc:
+            raise ProjectContextError("Немає дозволу зупинити agent worker.") from exc
+    else:
+        status["status"] = "closed"
+        status["outcome"] = status.get("outcome") or previous
+        status["updated_at"] = _now()
+        _write_json(status_path, status)
+    return {"agent_id": agent_id, "previous_status": previous, "status": status["status"], "result_preserved": (agent_dir / "result.md").is_file()}
+
+
+def _state_root(workspace: Path) -> Path:
+    configured = os.getenv("ARVIS_CODEX_AGENT_STATE_ROOT")
+    if not configured:
+        raise ProjectContextError("ARVIS_CODEX_AGENT_STATE_ROOT не налаштовано.")
+    root = Path(configured).expanduser().resolve()
+    if root == Path(root.anchor) or path_is_within(root, workspace) or path_is_within(workspace, root):
+        raise ProjectContextError("Agent state root має бути фізично поза project workspace.")
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return root
+
+
+def _agent_dir(state_root: Path, agent_id: str) -> Path:
+    if not AGENT_ID.fullmatch(agent_id or ""):
+        raise ProjectContextError("Некоректний agent ID.")
+    path = (state_root / agent_id).resolve()
+    if path.parent != state_root or not path.is_dir():
+        raise ProjectContextError("Agent не знайдено.")
+    return path
+
+
+def _public_status(status: dict[str, Any]) -> dict[str, Any]:
+    return {key: status.get(key) for key in ("agent_id", "status", "outcome", "created_at", "updated_at", "started_at", "finished_at", "handoff_from", "exit_code", "task_received", "workspace_accessible")}
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ProjectContextError("Стан агента недоступний або пошкоджений.") from exc
+    return value if isinstance(value, dict) else {}
+
+
+def _write_json(path: Path, value: dict[str, Any]) -> None:
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.chmod(temp, 0o600)
+    temp.replace(path)
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
