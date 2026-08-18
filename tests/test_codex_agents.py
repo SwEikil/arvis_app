@@ -87,9 +87,11 @@ class CodexAgentsTests(unittest.TestCase):
         launch.assert_called_once()
         self.assertTrue(created["visibility"]["same_session"])
 
-    @patch("codex_agents._reuse_existing_konsole", return_value={"terminal_service": "org.kde.konsole-123", "terminal_session_id": 2})
+    @patch("codex_agents.subprocess.Popen")
+    @patch("codex_agents._konsole_is_running", return_value=True)
     @patch("codex_agents.shutil.which", return_value="/usr/bin/konsole")
-    def test_terminal_launcher_is_fixed_and_reuses_existing_konsole(self, _which: Mock, reuse: Mock) -> None:
+    def test_terminal_launcher_is_fixed_and_reuses_existing_konsole(self, _which: Mock, _running: Mock, popen: Mock) -> None:
+        popen.return_value.pid = 22222
         agent_id = "b" * 32
         directory = self.state / agent_id
         directory.mkdir(parents=True)
@@ -99,14 +101,16 @@ class CodexAgentsTests(unittest.TestCase):
 
         result = codex_agents.show_agent(agent_id, workspace_hint=str(self.workspace), access_config=self.config)
 
-        helper_argv = reuse.call_args.args[1]
-        self.assertIn("codex_agent_terminal.py", " ".join(helper_argv))
-        self.assertNotIn("Inspect", helper_argv)
+        argv = popen.call_args.args[0]
+        self.assertEqual(argv[0:3], ["/usr/bin/konsole", "--force-reuse", "--new-tab"])
+        self.assertIn("codex_agent_terminal.py", " ".join(argv))
+        self.assertNotIn("Inspect", argv)
+        self.assertFalse(popen.call_args.kwargs["shell"])
         self.assertEqual(result["terminal_target"], "existing_tab")
         self.assertTrue(result["same_session"])
 
     @patch("codex_agents.subprocess.Popen")
-    @patch("codex_agents._reuse_existing_konsole", return_value=None)
+    @patch("codex_agents._konsole_is_running", return_value=False)
     @patch("codex_agents.shutil.which", return_value="/usr/bin/konsole")
     def test_terminal_launcher_falls_back_to_new_window_with_fixed_argv(self, _which: Mock, _reuse: Mock, popen: Mock) -> None:
         popen.return_value.pid = 22222
@@ -124,27 +128,6 @@ class CodexAgentsTests(unittest.TestCase):
         self.assertNotIn("Inspect", argv)
         self.assertFalse(popen.call_args.kwargs["shell"])
         self.assertEqual(result["terminal_target"], "new_window")
-
-    @patch("codex_agents._run_qdbus")
-    @patch("codex_agents.shutil.which", return_value="/usr/bin/qdbus")
-    def test_existing_konsole_reuse_uses_only_fixed_dbus_methods(self, _which: Mock, run: Mock) -> None:
-        run.side_effect = [
-            "org.kde.konsole-123\n",
-            "/Windows/1\n/Sessions/1\n",
-            "2\n",
-            "",
-            "",
-        ]
-        helper = ["/venv/python", "/repo/codex_agent_terminal.py", "/state/agent/request.json"]
-
-        result = codex_agents._reuse_existing_konsole(self.workspace, helper)
-
-        self.assertEqual(result, {"terminal_service": "org.kde.konsole-123", "terminal_session_id": 2})
-        calls = [call.args[0] for call in run.call_args_list]
-        self.assertIn("org.kde.konsole.Window.newSession", calls[2])
-        self.assertIn("org.kde.konsole.Session.runCommand", calls[3])
-        self.assertEqual(calls[3][-1], "/venv/python /repo/codex_agent_terminal.py /state/agent/request.json")
-        self.assertIn("org.kde.konsole.Window.setCurrentSession", calls[4])
 
     @patch("codex_agents.subprocess.Popen")
     def test_workspace_write_requires_explicit_allowed_root(self, popen: Mock) -> None:

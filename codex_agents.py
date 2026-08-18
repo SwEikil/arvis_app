@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 import shutil
 import signal
 import subprocess
@@ -189,15 +188,11 @@ def _launch_terminal(agent_dir: Path, workspace: Path) -> dict[str, Any]:
     status.update({"visible": True, "visibility_state": "launching", "same_session": True, "user_interaction": False, "updated_at": _now()})
     _write_json(status_path, status)
     helper_argv = [sys.executable, str(helper), str(agent_dir / "request.json")]
-    reused = _reuse_existing_konsole(workspace, helper_argv)
-    if reused is not None:
-        status = _read_json(status_path)
-        status.update({**reused, "updated_at": _now()})
-        _write_json(status_path, status)
-        return {"requested": True, "opened": True, "already_visible": False, "same_session": True, "mode": "read_only_then_interactive_resume", "user_interaction": False, "terminal_target": "existing_tab"}
+    had_terminal = _konsole_is_running()
+    reuse_argv = ["--force-reuse", "--new-tab"] if had_terminal else []
     try:
         process = subprocess.Popen(
-            [konsole, "--workdir", str(workspace), "-e", *helper_argv],
+            [konsole, *reuse_argv, "--workdir", str(workspace), "-e", *helper_argv],
             cwd=workspace,
             shell=False,
             stdin=subprocess.DEVNULL,
@@ -210,46 +205,23 @@ def _launch_terminal(agent_dir: Path, workspace: Path) -> dict[str, Any]:
     status = _read_json(status_path)
     status.update({"terminal_launcher_pid": process.pid, "updated_at": _now()})
     _write_json(status_path, status)
-    return {"requested": True, "opened": True, "already_visible": False, "same_session": True, "mode": "read_only_then_interactive_resume", "user_interaction": False, "terminal_target": "new_window"}
+    return {"requested": True, "opened": True, "already_visible": False, "same_session": True, "mode": "read_only_then_interactive_resume", "user_interaction": False, "terminal_target": "existing_tab" if had_terminal else "new_window"}
 
 
-def _reuse_existing_konsole(workspace: Path, helper_argv: list[str]) -> dict[str, Any] | None:
-    qdbus = shutil.which("qdbus") or shutil.which("qdbus6")
-    if not qdbus or Path(qdbus).name not in {"qdbus", "qdbus6"}:
-        return None
+def _konsole_is_running() -> bool:
+    proc = Path("/proc")
     try:
-        services = _run_qdbus([qdbus]).splitlines()
-        candidates = sorted(service.strip() for service in services if re.fullmatch(r"org\.kde\.konsole-\d+", service.strip()))
-        for service in candidates:
-            objects = _run_qdbus([qdbus, service]).splitlines()
-            windows = sorted(path.strip() for path in objects if re.fullmatch(r"/Windows/\d+", path.strip()))
-            for window in windows:
-                created = _run_qdbus([qdbus, service, window, "org.kde.konsole.Window.newSession", "", str(workspace)]).strip()
-                if not created.isdigit():
-                    continue
-                session_id = int(created)
-                session_path = f"/Sessions/{session_id}"
-                _run_qdbus([qdbus, service, session_path, "org.kde.konsole.Session.runCommand", shlex.join(helper_argv)])
-                _run_qdbus([qdbus, service, window, "org.kde.konsole.Window.setCurrentSession", str(session_id)])
-                return {"terminal_service": service, "terminal_session_id": session_id}
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return None
-
-
-def _run_qdbus(argv: list[str]) -> str:
-    completed = subprocess.run(
-        argv,
-        shell=False,
-        stdin=subprocess.DEVNULL,
-        text=True,
-        capture_output=True,
-        timeout=5,
-        check=False,
-    )
-    if completed.returncode != 0:
-        raise subprocess.SubprocessError("Konsole DBus request failed.")
-    return completed.stdout
+        for entry in proc.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                if (entry / "comm").read_text(encoding="utf-8", errors="replace").strip() in {"konsole", "konsole-bin"}:
+                    return True
+            except OSError:
+                continue
+    except OSError:
+        return False
+    return False
 
 
 def _read_json(path: Path) -> dict[str, Any]:
