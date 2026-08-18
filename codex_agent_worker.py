@@ -45,6 +45,8 @@ def main() -> int:
         return 127
     sandbox = "read-only" if request["mode"] == "read_only" else "workspace-write"
     argv = [codex, "exec", "--json", "--color", "never", "--sandbox", sandbox, "-c", 'approval_policy="never"', "--cd", request["workspace"], "--output-last-message", str(agent_dir / "result.md"), request["task"]]
+    allowed_env = {"HOME", "PATH", "LANG", "LC_ALL", "TMPDIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "CODEX_HOME"}
+    child_env = {key: value for key, value in os.environ.items() if key in allowed_env}
     events = (agent_dir / "events.jsonl").open("w", encoding="utf-8")
     errors = (agent_dir / "stderr.log").open("w", encoding="utf-8")
     process: subprocess.Popen | None = None
@@ -57,7 +59,7 @@ def main() -> int:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     try:
-        process = subprocess.Popen(argv, cwd=request["workspace"], shell=False, stdin=subprocess.DEVNULL, stdout=events, stderr=errors, text=True, close_fds=True)
+        process = subprocess.Popen(argv, cwd=request["workspace"], shell=False, stdin=subprocess.DEVNULL, stdout=events, stderr=errors, text=True, close_fds=True, env=child_env)
         code = process.wait()
     except Exception:
         code = 125
