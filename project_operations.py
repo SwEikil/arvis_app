@@ -11,7 +11,12 @@ from typing import Any
 
 from mcp_access import McpAccessConfig
 from mcp_security import redact_sensitive_lines, redact_sensitive_text
-from project_context import ProjectContextError, resolve_project_root, safe_project_path
+from project_context import (
+    ProjectContextError,
+    require_writable_project_root,
+    resolve_project_root,
+    safe_project_path,
+)
 
 
 PROJECT_EXTENSIONS = {".sln", ".csproj", ".fsproj", ".vbproj"}
@@ -19,6 +24,9 @@ CONFIGURATIONS = {"Debug", "Release"}
 MAX_COMMAND_OUTPUT = 50_000
 MAX_ARTIFACT_BYTES = 128 * 1024 * 1024
 MAX_ARCHIVE_ENTRIES = 5_000
+MAX_GIT_LIST_ITEMS = 5_000
+MAX_GIT_COMMITS = 500
+MAX_GIT_CAPTURE_CHARS = 2_000_000
 
 
 def project_state(project_root: str | None, *, access_config: McpAccessConfig) -> dict[str, Any]:
@@ -76,6 +84,119 @@ def git_diff(
         "error": result["stderr"] or None,
         "truncated": result["truncated"],
     }
+
+
+def git_inspect(
+    project_root: str | None,
+    max_tracked_files: int = 1_000,
+    max_commits: int = 100,
+    max_history_paths: int = 2_000,
+    *,
+    access_config: McpAccessConfig,
+) -> dict[str, Any]:
+    """Return a bounded, fixed-command audit of the current reachable Git state."""
+
+    root = resolve_project_root(project_root, access_config=access_config)
+    tracked_limit = min(max(int(max_tracked_files), 1), MAX_GIT_LIST_ITEMS)
+    commit_limit = min(max(int(max_commits), 1), MAX_GIT_COMMITS)
+    path_limit = min(max(int(max_history_paths), 1), MAX_GIT_LIST_ITEMS)
+
+    repo = _run_fixed(["git", "rev-parse", "--is-inside-work-tree"], root, 10, max_chars=200)
+    if repo["return_code"] != 0 or repo["stdout"].strip() != "true" or not _git_top_level_matches(root):
+        return {
+            "project_root": ".",
+            "is_git_repo": False,
+            "branch": None,
+            "head": None,
+            "tracked_files": [],
+            "tracked_files_truncated": False,
+            "commits": [],
+            "history_truncated": False,
+            "history_paths": [],
+            "history_paths_truncated": False,
+            "error": repo["stderr"] or "Not a Git work tree.",
+        }
+
+    branch_result = _run_fixed(["git", "symbolic-ref", "--quiet", "--short", "HEAD"], root, 10, max_chars=1_000)
+    head_result = _run_fixed(["git", "rev-parse", "--verify", "HEAD"], root, 10, max_chars=200)
+    tracked_result = _run_fixed(
+        ["git", "ls-files", "-z"],
+        root,
+        15,
+        max_chars=MAX_GIT_CAPTURE_CHARS,
+    )
+    tracked_all = _bounded_git_paths(tracked_result["stdout"].split("\0"), tracked_limit + 1)
+    tracked_truncated = tracked_result["truncated"] or len(tracked_all) > tracked_limit
+
+    commit_result = _run_fixed(
+        [
+            "git",
+            "log",
+            "--no-show-signature",
+            f"--max-count={commit_limit + 1}",
+            "--format=%H%x1f%P%x1f%aI%x1f%s%x1e",
+            "HEAD",
+        ],
+        root,
+        20,
+        max_chars=MAX_GIT_CAPTURE_CHARS,
+    )
+    commits = _parse_git_commits(commit_result["stdout"], commit_limit + 1)
+    history_truncated = commit_result["truncated"] or len(commits) > commit_limit
+
+    history_path_result = _run_fixed(
+        [
+            "git",
+            "log",
+            "--format=",
+            "--name-only",
+            "-z",
+            "--diff-filter=ACDMRTUXB",
+            "HEAD",
+            "--",
+        ],
+        root,
+        30,
+        max_chars=MAX_GIT_CAPTURE_CHARS,
+    )
+    history_paths_all = _bounded_git_paths(history_path_result["stdout"].split("\0"), path_limit + 1)
+    history_paths_truncated = history_path_result["truncated"] or len(history_paths_all) > path_limit
+
+    return {
+        "project_root": ".",
+        "is_git_repo": True,
+        "branch": branch_result["stdout"].strip() or None,
+        "detached_head": branch_result["return_code"] != 0 and head_result["return_code"] == 0,
+        "head": head_result["stdout"].strip() or None,
+        "tracked_files": tracked_all[:tracked_limit],
+        "tracked_file_count": min(len(tracked_all), tracked_limit),
+        "tracked_files_truncated": tracked_truncated,
+        "commits": commits[:commit_limit],
+        "commit_count": min(len(commits), commit_limit),
+        "history_truncated": history_truncated,
+        "history_paths": history_paths_all[:path_limit],
+        "history_path_count": min(len(history_paths_all), path_limit),
+        "history_paths_truncated": history_paths_truncated,
+        "error": head_result["stderr"] or None,
+    }
+
+
+def _git_top_level_matches(root: Path) -> bool:
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=root,
+            shell=False,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+            env=_safe_subprocess_env(),
+        )
+        return completed.returncode == 0 and Path(completed.stdout.strip()).resolve() == root.resolve()
+    except (OSError, subprocess.TimeoutExpired, RuntimeError):
+        return False
 
 
 def build_project(
@@ -218,6 +339,7 @@ def smapi_mod_status(mod_id: str, max_matches: int = 80) -> dict[str, Any]:
 
 def _dotnet_operation(operation: str, project_root: str | None, project: str | None, configuration: str, timeout_seconds: int, access_config: McpAccessConfig) -> dict[str, Any]:
     root = resolve_project_root(project_root, access_config=access_config)
+    require_writable_project_root(root, access_config=access_config)
     if configuration not in CONFIGURATIONS:
         raise ProjectContextError("configuration має бути Debug або Release.")
     target = _resolve_project(root, project)
@@ -310,6 +432,42 @@ def _sanitize_command_output(value: str, cwd: Path) -> str:
     text = re.sub(r"/(?:var/)?home/[^/\s'\"]+", "<HOME>", text)
     text = re.sub(r"[A-Za-z]:\\Users\\[^\\\s'\"]+", "<HOME>", text)
     return text
+
+
+def _bounded_git_paths(values: list[str], limit: int) -> list[str]:
+    paths: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        value = raw.strip("\r\n")
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        paths.append(redact_sensitive_text(value[:1_000]))
+        if len(paths) >= limit:
+            break
+    return paths
+
+
+def _parse_git_commits(value: str, limit: int) -> list[dict[str, Any]]:
+    commits: list[dict[str, Any]] = []
+    for record in value.split("\x1e"):
+        if not record.strip():
+            continue
+        fields = record.strip("\r\n").split("\x1f", 3)
+        if len(fields) != 4:
+            continue
+        sha, parents, authored_at, subject = fields
+        commits.append(
+            {
+                "sha": sha,
+                "parents": [parent for parent in parents.split() if parent],
+                "authored_at": authored_at,
+                "subject": redact_sensitive_text(subject[:500]),
+            }
+        )
+        if len(commits) >= limit:
+            break
+    return commits
 
 
 def _load_manifest(path: Path) -> dict[str, Any]:

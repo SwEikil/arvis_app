@@ -30,6 +30,7 @@ class CodexAgentsTests(unittest.TestCase):
         self.environment = patch.dict(os.environ, {
             "ARVIS_CODEX_AGENT_CONTROL_ENABLED": "true",
             "ARVIS_CODEX_AGENT_STATE_ROOT": str(self.state),
+            "ARVIS_CODEX_VISIBLE_TERMINAL_ENABLED": "true",
         })
         self.environment.start()
 
@@ -73,6 +74,66 @@ class CodexAgentsTests(unittest.TestCase):
         result = codex_agents.get_result(agent_id, max_chars=500, workspace_hint=str(self.workspace), access_config=self.config)
         self.assertNotIn("fake-secret", result["result"])
         self.assertTrue(result["truncated"])
+
+    @patch("codex_agents._launch_terminal")
+    @patch("codex_agents.subprocess.Popen")
+    def test_visible_create_opens_same_agent_without_duplicate_worker(self, popen: Mock, launch: Mock) -> None:
+        popen.return_value.pid = 12345
+        launch.return_value = {"requested": True, "opened": True, "same_session": True, "mode": "read_only_then_interactive_resume"}
+
+        created = codex_agents.create_agent("Inspect", str(self.workspace), visible=True, access_config=self.config)
+
+        self.assertEqual(popen.call_count, 1)
+        launch.assert_called_once()
+        self.assertTrue(created["visibility"]["same_session"])
+
+    @patch("codex_agents.subprocess.Popen")
+    @patch("codex_agents._konsole_is_running", return_value=True)
+    @patch("codex_agents.shutil.which", return_value="/usr/bin/konsole")
+    def test_terminal_launcher_is_fixed_and_reuses_existing_konsole(self, _which: Mock, _running: Mock, popen: Mock) -> None:
+        popen.return_value.pid = 22222
+        agent_id = "b" * 32
+        directory = self.state / agent_id
+        directory.mkdir(parents=True)
+        request = {"agent_id": agent_id, "workspace": str(self.workspace), "mode": "read_only", "task": "Inspect"}
+        (directory / "request.json").write_text(json.dumps(request), encoding="utf-8")
+        (directory / "status.json").write_text(json.dumps({"agent_id": agent_id, "status": "completed"}), encoding="utf-8")
+
+        result = codex_agents.show_agent(agent_id, workspace_hint=str(self.workspace), access_config=self.config)
+
+        argv = popen.call_args.args[0]
+        self.assertEqual(argv[0:2], ["/usr/bin/konsole", "--new-tab"])
+        self.assertIn("codex_agent_terminal.py", " ".join(argv))
+        self.assertNotIn("Inspect", argv)
+        self.assertFalse(popen.call_args.kwargs["shell"])
+        self.assertEqual(result["terminal_target"], "existing_tab")
+        self.assertTrue(result["same_session"])
+
+    @patch("codex_agents.subprocess.Popen")
+    def test_workspace_write_requires_explicit_allowed_root(self, popen: Mock) -> None:
+        popen.return_value.pid = 12345
+        denied = load_mcp_access_config(
+            environ={
+                "ARVIS_MCP_PROFILE": "chatgpt",
+                "ARVIS_MCP_PROJECT_ROOT": str(self.workspace),
+                "ARVIS_MCP_ALLOWED_ROOTS": str(self.workspace),
+            },
+            cwd=self.workspace,
+        )
+        allowed = load_mcp_access_config(
+            environ={
+                "ARVIS_MCP_PROFILE": "chatgpt",
+                "ARVIS_MCP_PROJECT_ROOT": str(self.workspace),
+                "ARVIS_MCP_ALLOWED_ROOTS": str(self.workspace),
+                "ARVIS_MCP_WRITABLE_ROOTS": str(self.workspace),
+            },
+            cwd=self.workspace,
+        )
+
+        with self.assertRaises(ProjectContextError):
+            codex_agents.create_agent("Write", str(self.workspace), mode="workspace_write", access_config=denied)
+        created = codex_agents.create_agent("Write", str(self.workspace), mode="workspace_write", access_config=allowed)
+        self.assertEqual(created["status"], "initializing")
 
 
 if __name__ == "__main__":

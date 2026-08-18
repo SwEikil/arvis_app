@@ -152,6 +152,12 @@ def git_diff(project_root: str | None = None, scope: str = "unstaged", path: str
     return _safe_call(project_operations.git_diff, project_root=project_root, scope=scope, path=path, context_lines=context_lines, max_chars=max_chars, access_config=ACCESS_CONFIG)
 
 
+@mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
+def git_inspect(project_root: str | None = None, max_tracked_files: int = 1000, max_commits: int = 100, max_history_paths: int = 2000) -> dict[str, Any]:
+    """Повернути bounded branch, HEAD, tracked files, reachable history та history paths."""
+    return _safe_call(project_operations.git_inspect, project_root=project_root, max_tracked_files=max_tracked_files, max_commits=max_commits, max_history_paths=max_history_paths, access_config=ACCESS_CONFIG)
+
+
 @mcp.tool(annotations=CONTROL_ANNOTATIONS)
 def build_project(project_root: str | None = None, project: str | None = None, configuration: str = "Debug", timeout_seconds: int = 300) -> dict[str, Any]:
     """Запустити тільки dotnet build для валідованого project file."""
@@ -196,9 +202,9 @@ def smapi_mod_status(mod_id: str, max_matches: int = 80) -> dict[str, Any]:
 
 if codex_agents.control_enabled():
     @mcp.tool(annotations=CONTROL_ANNOTATIONS)
-    def codex_agent_create(task: str, project_root: str | None = None, mode: str = "read_only", handoff_from: str | None = None, handoff_text: str | None = None) -> dict[str, Any]:
+    def codex_agent_create(task: str, project_root: str | None = None, mode: str = "read_only", handoff_from: str | None = None, handoff_text: str | None = None, visible: bool = False) -> dict[str, Any]:
         """Створити bounded Codex agent у дозволеному workspace без arbitrary shell."""
-        return _safe_call(codex_agents.create_agent, task=task, project_root=project_root, mode=mode, handoff_from=handoff_from, handoff_text=handoff_text, access_config=ACCESS_CONFIG)
+        return _safe_call(codex_agents.create_agent, task=task, project_root=project_root, mode=mode, handoff_from=handoff_from, handoff_text=handoff_text, visible=visible, access_config=ACCESS_CONFIG)
 
     @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     def codex_agent_status(agent_id: str, project_root: str | None = None) -> dict[str, Any]:
@@ -214,6 +220,11 @@ if codex_agents.control_enabled():
     def codex_agent_close(agent_id: str, project_root: str | None = None) -> dict[str, Any]:
         """Коректно зупинити або закрити Codex agent, зберігши result/state."""
         return _safe_call(codex_agents.close_agent, agent_id=agent_id, workspace_hint=project_root, access_config=ACCESS_CONFIG)
+
+    @mcp.tool(annotations=CONTROL_ANNOTATIONS)
+    def codex_agent_show(agent_id: str, project_root: str | None = None) -> dict[str, Any]:
+        """Показати того самого Codex agent у narrowly-scoped Konsole tab/window."""
+        return _safe_call(codex_agents.show_agent, agent_id=agent_id, workspace_hint=project_root, access_config=ACCESS_CONFIG)
 
 
 @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)

@@ -165,6 +165,13 @@ def resolve_project_root(
     return root
 
 
+def require_writable_project_root(root: Path, *, access_config: McpAccessConfig) -> None:
+    """Require an explicit write-capable root without widening read access."""
+
+    if not any(path_is_within(root, writable_root) for writable_root in access_config.writable_roots):
+        raise ProjectContextError("Корінь проєкту не дозволений для write-capable MCP operations.")
+
+
 def safe_project_path(root: Path, user_path: str) -> Path:
     if not user_path or not user_path.strip():
         raise ProjectContextError("Шлях не може бути порожнім.")

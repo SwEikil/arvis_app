@@ -15,6 +15,7 @@ SUPPORTED_PROFILES = {PROFILE_CODEX, PROFILE_CHATGPT}
 PROFILE_ENV = "ARVIS_MCP_PROFILE"
 PROJECT_ROOT_ENV = "ARVIS_MCP_PROJECT_ROOT"
 ALLOWED_ROOTS_ENV = "ARVIS_MCP_ALLOWED_ROOTS"
+WRITABLE_ROOTS_ENV = "ARVIS_MCP_WRITABLE_ROOTS"
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,7 @@ class McpAccessConfig:
 
     profile: str
     allowed_roots: tuple[Path, ...]
+    writable_roots: tuple[Path, ...]
     default_root: Path | None
     configuration_error: str | None = None
 
@@ -52,17 +54,20 @@ def load_mcp_access_config(
         return McpAccessConfig(
             profile=profile,
             allowed_roots=(),
+            writable_roots=(),
             default_root=None,
             configuration_error="Непідтримуваний профіль доступу MCP.",
         )
 
     configured_allowed = _parse_allowed_roots(env.get(ALLOWED_ROOTS_ENV), working_directory)
+    configured_writable = _parse_allowed_roots(env.get(WRITABLE_ROOTS_ENV), working_directory)
     configured_default = _resolve_configured_path(env.get(PROJECT_ROOT_ENV), working_directory)
 
     if profile == PROFILE_CHATGPT and not configured_allowed:
         return McpAccessConfig(
             profile=profile,
             allowed_roots=(),
+            writable_roots=(),
             default_root=None,
             configuration_error="Профіль MCP для ChatGPT потребує явного списку дозволених коренів проєктів.",
         )
@@ -71,10 +76,15 @@ def load_mcp_access_config(
     if not allowed_roots:
         allowed_roots = (configured_default or working_directory,)
 
+    writable_roots = configured_writable
+    if not writable_roots and profile == PROFILE_CODEX:
+        writable_roots = allowed_roots
+
     if any(_is_filesystem_anchor(root) for root in allowed_roots):
         return McpAccessConfig(
             profile=profile,
             allowed_roots=(),
+            writable_roots=(),
             default_root=None,
             configuration_error="Корінь файлової системи не можна використовувати як корінь MCP-проєкту.",
         )
@@ -84,13 +94,32 @@ def load_mcp_access_config(
         return McpAccessConfig(
             profile=profile,
             allowed_roots=allowed_roots,
+            writable_roots=(),
             default_root=None,
             configuration_error="Стандартний корінь MCP-проєкту перебуває поза налаштованим списком дозволених коренів.",
+        )
+
+    if any(_is_filesystem_anchor(root) for root in writable_roots):
+        return McpAccessConfig(
+            profile=profile,
+            allowed_roots=allowed_roots,
+            writable_roots=(),
+            default_root=None,
+            configuration_error="Корінь файлової системи не можна використовувати як writable MCP root.",
+        )
+    if any(not any(path_is_within(root, allowed) for allowed in allowed_roots) for root in writable_roots):
+        return McpAccessConfig(
+            profile=profile,
+            allowed_roots=allowed_roots,
+            writable_roots=(),
+            default_root=None,
+            configuration_error="Writable MCP root має перебувати в дозволеному read root.",
         )
 
     return McpAccessConfig(
         profile=profile,
         allowed_roots=allowed_roots,
+        writable_roots=writable_roots,
         default_root=default_root,
     )
 

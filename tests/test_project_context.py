@@ -106,6 +106,46 @@ class ProjectContextTests(unittest.TestCase):
         with self.assertRaises(ProjectContextError):
             project_context.resolve_project_root("outside-link")
 
+    def test_parent_workspace_allows_bounded_private_handoff_but_not_escape(self) -> None:
+        parent = self.root.parent / "workspace"
+        public = parent / "public-mod"
+        private = parent / "local-dev"
+        handoff = private / "handoffs" / "stage1.md"
+        public.mkdir(parents=True)
+        handoff.parent.mkdir(parents=True)
+        handoff.write_text("API_KEY=fake-private-value\nStage 1 facts\n", encoding="utf-8")
+        unrelated = self.root.parent / "unrelated"
+        unrelated.mkdir()
+        (unrelated / "secret.md").write_text("outside\n", encoding="utf-8")
+        config = load_mcp_access_config(
+            environ={
+                "ARVIS_MCP_PROFILE": "chatgpt",
+                "ARVIS_MCP_PROJECT_ROOT": str(public),
+                "ARVIS_MCP_ALLOWED_ROOTS": str(parent),
+                "ARVIS_MCP_WRITABLE_ROOTS": str(public),
+            },
+            cwd=parent,
+        )
+
+        from_parent = project_context.read_file_excerpt(
+            "local-dev/handoffs/stage1.md",
+            project_root=str(parent),
+            access_config=config,
+        )
+        from_private = project_context.read_file_excerpt(
+            "handoffs/stage1.md",
+            project_root=str(private),
+            access_config=config,
+        )
+
+        self.assertIn("Stage 1 facts", from_parent["content"])
+        self.assertEqual(from_parent["content"], from_private["content"])
+        self.assertNotIn("fake-private-value", from_parent["content"])
+        with self.assertRaises(ProjectContextError):
+            project_context.read_file_excerpt("../unrelated/secret.md", project_root=str(parent), access_config=config)
+        with self.assertRaises(ProjectContextError):
+            project_context.resolve_project_root(str(unrelated), access_config=config)
+
     def test_chatgpt_profile_without_allowlist_fails_closed(self) -> None:
         config = load_mcp_access_config(
             environ={"ARVIS_MCP_PROFILE": "chatgpt"},
@@ -318,6 +358,7 @@ def handle(token: str, password: str) -> None:
             repo_root / "arvis_mcp_server.py",
             repo_root / "mcp_access.py",
             repo_root / "mcp_security.py",
+            repo_root / "codex_agent_terminal.py",
             repo_root / "system_context.py",
             repo_root / "tests" / "test_system_context.py",
             repo_root / ".env.example",

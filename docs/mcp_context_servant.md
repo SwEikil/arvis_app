@@ -39,12 +39,15 @@ Standalone server спочатку читає явно задане середо
 
 ## Профілі доступу та інструменти
 
-- `codex` — профіль сумісності, який публікує всі п'ятнадцять інструментів.
+- `codex` — профіль сумісності. За вимкненого lifecycle він публікує 25
+  інструментів; за ввімкненого — 30.
   Якщо список дозволених коренів не налаштований, доступ обмежується
   `ARVIS_MCP_PROJECT_ROOT`, а за відсутності цієї змінної — робочим каталогом
   сервера.
-- `chatgpt` працює fail-closed і лише для читання. Він потребує явного значення
-  `ARVIS_MCP_ALLOWED_ROOTS` і не публікує `memory_append`.
+- `chatgpt` працює fail-closed. Він потребує явного значення
+  `ARVIS_MCP_ALLOWED_ROOTS`, не публікує `memory_append` і має 24 інструменти
+  без lifecycle або 29 із lifecycle. Різниця рівно в один інструмент між
+  профілями є навмисною.
 
 Обидва профілі публікують такі read-only інструменти:
 
@@ -54,6 +57,8 @@ Standalone server спочатку читає явно задане середо
 - `read_file_excerpt` — обмежений уривок рядків одного безпечного текстового
   файлу.
 - `git_status_summary` — обмежений результат фіксованих безпечних команд Git.
+- `git_inspect` — branch, повний HEAD, tracked files, bounded reachable commits
+  і дедуплікований bounded audit paths, яких торкалась reachable history.
 - `task_brief` — компактні пошукові підказки для задачі.
 - `memory_read` — обмежене читання з `.arvis_mcp_memory/`.
 - `system_info` — OS, architecture, kernel, desktop/session, Plasma/Qt, atomic
@@ -79,8 +84,9 @@ Standalone server спочатку читає явно задане середо
 
 | Клас інструментів | Read-only | Destructive | Idempotent | Open world |
 | --- | --- | --- | --- | --- |
-| Чотирнадцять інструментів читання | `true` | `false` | `true` | `false` |
+| Інструменти читання | `true` | `false` | `true` | `false` |
 | `memory_append` | `false` | `false` | `false` | `false` |
+| Build/test і lifecycle control | `false` | `false` | `false` | `false` |
 
 Усі поточні інструменти читання мають `openWorldHint=false`. Зокрема,
 `package_search` і частина `package_info`, що перевіряє репозиторій, викликають
@@ -221,6 +227,13 @@ environment не скануються.
 цього списку. Аргумент `project_root` інструменту може вибрати лише дозволений
 корінь або його нащадка.
 
+`ARVIS_MCP_WRITABLE_ROOTS` — окремий explicit allowlist для операцій, які
+можуть змінити workspace: `dotnet build/test` і `workspace_write` Codex agent.
+Для `chatgpt` він порожній за замовчуванням. Це дозволяє додати parent workspace
+для bounded/redacted читання private handoff, не надаючи write access усьому
+parent root. У compatibility-профілі `codex` відсутнє значення успадковує
+read roots; production-конфігурації рекомендовано задавати його явно.
+
 Шляхи канонізуються до авторизації. Виходи через абсолютний шлях, parent (`..`), корінь
 файлової системи або symlink відхиляються. `chatgpt` ніколи не переходить до
 домашнього каталогу чи всієї файлової системи, якщо список дозволених коренів
@@ -232,6 +245,7 @@ environment не скануються.
 ARVIS_MCP_PROFILE=chatgpt
 ARVIS_MCP_PROJECT_ROOT=/path/to/arvis
 ARVIS_MCP_ALLOWED_ROOTS=/path/to/arvis:/path/to/another-project
+ARVIS_MCP_WRITABLE_ROOTS=/path/to/arvis
 ```
 
 Реальні значення зберігай лише в ignored `.env.local`, `.env` або середовищі
@@ -243,7 +257,9 @@ credentials Tunnel чи токени до tracked коду або приклад
 - Інструменти MCP не редагують вихідний код і не виконують довільні shell
   commands. Project build/test дозволяють лише фіксовані `dotnet build` і
   `dotnet test` для project files усередині дозволеного root.
-- Перевірка Git використовує фіксований список команд, `shell=False` і timeout.
+- Перевірка Git використовує фіксований список команд, `shell=False`, timeout
+  і bounded lists. `git_inspect` відхиляє випадок, коли Git намагається піднятися
+  до repository top-level поза вибраним project root.
 - Системна перевірка використовує фіксовану форму argv, `shell=False`,
   вимкнений stdin, локальний timeout 5 секунд, timeout репозиторію 12 секунд,
   ліміти stdout 64 KiB і stderr 8 KiB. Ввід моделі потрапляє лише до валідованих
@@ -296,6 +312,7 @@ enabled = true
 ARVIS_MCP_PROFILE = "codex"
 ARVIS_MCP_PROJECT_ROOT = "/absolute/path/to/arvis_app"
 ARVIS_MCP_ALLOWED_ROOTS = "/absolute/path/to/arvis_app"
+ARVIS_MCP_WRITABLE_ROOTS = "/absolute/path/to/arvis_app"
 ```
 
 Приклад для CLI:
@@ -305,6 +322,7 @@ codex mcp add arvis_context \
   --env ARVIS_MCP_PROFILE=codex \
   --env ARVIS_MCP_PROJECT_ROOT=/absolute/path/to/arvis_app \
   --env ARVIS_MCP_ALLOWED_ROOTS=/absolute/path/to/arvis_app \
+  --env ARVIS_MCP_WRITABLE_ROOTS=/absolute/path/to/arvis_app \
   -- .venv/bin/python arvis_mcp_server.py
 ```
 
@@ -332,7 +350,8 @@ Project-scoped API доповнює базові `project_map`, `read_file_excer
 `grep_project` і `git_status_summary` такими операціями:
 
 - `project_state` і `git_diff` повертають структурований changed-file state та
-  bounded staged/unstaged diff;
+  bounded staged/unstaged diff; `git_inspect` додає independent acceptance data:
+  branch, full HEAD, tracked files, bounded reachable history і history path audit;
 - `build_project` і `test_project` запускають лише `dotnet` над валідованим
   `.sln`/`.csproj`/`.fsproj`/`.vbproj` у дозволеному root;
 - `validate_manifest` і `validate_mod_artifact` перевіряють SMAPI manifest та
@@ -348,10 +367,10 @@ ignored local environment. Build/test успадковують мінімаль�
 ## Codex agent lifecycle
 
 Lifecycle tools реєструються лише коли локально ввімкнено
-`ARVIS_CODEX_AGENT_CONTROL_ENABLED=true`. API навмисно складається з чотирьох
-операцій: `codex_agent_create`, `codex_agent_status`, `codex_agent_result` і
-`codex_agent_close`. Деталі CLI ізольовані у worker; клієнт не передає команду,
-flags або executable.
+`ARVIS_CODEX_AGENT_CONTROL_ENABLED=true`. API складається з п'яти операцій:
+`codex_agent_create`, `codex_agent_status`, `codex_agent_result`,
+`codex_agent_close` і `codex_agent_show`. Деталі CLI ізольовані у worker;
+клієнт не передає команду, flags, terminal або executable.
 
 Agent state root обов'язково має бути фізично поза project workspace. Worker
 зберігає request, bounded events, stderr, status і final result локально.
@@ -362,3 +381,18 @@ Agent state root обов'язково має бути фізично поза p
 Predecessor не закривається автоматично: caller спочатку створює successor,
 перевіряє `task_received` та `workspace_accessible`, і лише потім викликає
 `close` для predecessor. Помилка successor не видаляє predecessor state.
+
+Visible mode окремо opt-in через `ARVIS_CODEX_VISIBLE_TERMINAL_ENABLED=true` і
+параметр `visible=true` у `codex_agent_create`; наявний agent можна показати
+через `codex_agent_show(agent_id)`. Arvis запускає тільки фіксований Konsole
+argv із власним helper, тому API не є process launcher. Якщо Konsole вже
+працює, `--new-tab` просить використати його; інакше Konsole створює вікно.
+
+Codex CLI не надає concurrent TUI attach до активного `codex exec`. Тому під
+час первинного run terminal є read-only viewer того самого JSONL stream. Після
+завершення worker helper запускає `codex resume --include-non-interactive` з
+точним збереженим session ID: це послідовне інтерактивне продовження тієї самої
+session, а не другий конкурентний agent. Під час цієї фази користувач може
+вводити текст. Status явно показує `visibility_state`, `same_session`,
+`user_interaction`, `session_id` і `result_scope`; після виходу з TUI final
+answer з тієї самої session оновлює lifecycle result/handoff.

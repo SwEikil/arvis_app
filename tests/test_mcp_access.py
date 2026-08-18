@@ -33,6 +33,7 @@ class McpAccessConfigTests(unittest.TestCase):
             )
 
         self.assertTrue(config.memory_writes_allowed)
+        self.assertEqual(config.writable_roots, (root.resolve(),))
 
     def test_chatgpt_profile_is_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -47,6 +48,36 @@ class McpAccessConfigTests(unittest.TestCase):
 
         self.assertEqual(config.profile, PROFILE_CHATGPT)
         self.assertFalse(config.memory_writes_allowed)
+        self.assertEqual(config.writable_roots, ())
+
+    def test_chatgpt_write_roots_are_explicit_and_must_stay_inside_read_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            readable = base / "readable"
+            writable = readable / "writable"
+            outside = base / "outside"
+            writable.mkdir(parents=True)
+            outside.mkdir()
+            allowed = load_mcp_access_config(
+                environ={
+                    "ARVIS_MCP_PROFILE": "chatgpt",
+                    "ARVIS_MCP_ALLOWED_ROOTS": str(readable),
+                    "ARVIS_MCP_WRITABLE_ROOTS": str(writable),
+                },
+                cwd=base,
+            )
+            denied = load_mcp_access_config(
+                environ={
+                    "ARVIS_MCP_PROFILE": "chatgpt",
+                    "ARVIS_MCP_ALLOWED_ROOTS": str(readable),
+                    "ARVIS_MCP_WRITABLE_ROOTS": str(outside),
+                },
+                cwd=base,
+            )
+
+        self.assertEqual(allowed.writable_roots, (writable.resolve(),))
+        self.assertIsNone(allowed.configuration_error)
+        self.assertIsNotNone(denied.configuration_error)
 
     def test_multiple_allowed_roots_and_default_are_resolved(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -84,6 +115,7 @@ class McpToolMetadataTests(unittest.TestCase):
     READ_ONLY_PROJECT_TOOLS = {
         "project_state",
         "git_diff",
+        "git_inspect",
         "validate_manifest",
         "validate_mod_artifact",
         "stardew_environment",
@@ -96,6 +128,7 @@ class McpToolMetadataTests(unittest.TestCase):
         "codex_agent_status",
         "codex_agent_result",
         "codex_agent_close",
+        "codex_agent_show",
     }
 
     def _load_server(self, profile: str, root: Path):
@@ -130,7 +163,7 @@ class McpToolMetadataTests(unittest.TestCase):
             | self.READ_ONLY_PROJECT_TOOLS
             | self.CONTROL_PROJECT_TOOLS,
         )
-        self.assertEqual(len(tools), 24)
+        self.assertEqual(len(tools), 25)
         self.assertTrue(
             all(any("а" <= char.casefold() <= "я" or char.casefold() in "іїєґ" for char in tool.description) for tool in tools.values())
         )
@@ -165,7 +198,7 @@ class McpToolMetadataTests(unittest.TestCase):
             | self.READ_ONLY_PROJECT_TOOLS
             | self.CONTROL_PROJECT_TOOLS,
         )
-        self.assertEqual(len(tools), 23)
+        self.assertEqual(len(tools), 24)
         self.assertNotIn("memory_append", tools)
 
     def test_agent_lifecycle_tools_are_opt_in(self) -> None:
@@ -179,6 +212,54 @@ class McpToolMetadataTests(unittest.TestCase):
         self.assertTrue(self.AGENT_TOOLS.issubset(tools))
         self.assertFalse(tools["codex_agent_create"].annotations.readOnlyHint)
         self.assertTrue(tools["codex_agent_status"].annotations.readOnlyHint)
+        self.assertFalse(tools["codex_agent_show"].annotations.readOnlyHint)
+
+    def test_exact_enabled_tool_counts_and_schemas_match_profiles(self) -> None:
+        for profile, expected in (("chatgpt", 29), ("codex", 30)):
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                env = {
+                    "ARVIS_MCP_PROFILE": profile,
+                    "ARVIS_MCP_PROJECT_ROOT": str(root),
+                    "ARVIS_MCP_ALLOWED_ROOTS": str(root),
+                    "ARVIS_CODEX_AGENT_CONTROL_ENABLED": "true",
+                }
+                with patch.dict(os.environ, env):
+                    import arvis_mcp_server
+                    module = importlib.reload(arvis_mcp_server)
+                    tools = {tool.name: tool for tool in asyncio.run(module.mcp.list_tools())}
+
+            self.assertEqual(len(tools), expected)
+            self.assertEqual(set(tools) & self.AGENT_TOOLS, self.AGENT_TOOLS)
+            self.assertTrue(all(tool.inputSchema.get("type") == "object" for tool in tools.values()))
+            if profile == "chatgpt":
+                self.assertNotIn("memory_append", tools)
+            else:
+                self.assertIn("memory_append", tools)
+
+    def test_new_tool_schemas_are_narrow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            env = {
+                "ARVIS_MCP_PROFILE": "chatgpt",
+                "ARVIS_MCP_PROJECT_ROOT": str(root),
+                "ARVIS_MCP_ALLOWED_ROOTS": str(root),
+                "ARVIS_CODEX_AGENT_CONTROL_ENABLED": "true",
+            }
+            with patch.dict(os.environ, env):
+                import arvis_mcp_server
+                module = importlib.reload(arvis_mcp_server)
+                tools = {tool.name: tool for tool in asyncio.run(module.mcp.list_tools())}
+
+        self.assertEqual(tools["codex_agent_create"].inputSchema["properties"]["visible"]["type"], "boolean")
+        self.assertEqual(set(tools["codex_agent_show"].inputSchema["properties"]), {"agent_id", "project_root"})
+        self.assertEqual(
+            set(tools["git_inspect"].inputSchema["properties"]),
+            {"project_root", "max_tracked_files", "max_commits", "max_history_paths"},
+        )
+        serialized = repr({name: tool.inputSchema for name, tool in tools.items()})
+        self.assertNotIn("shell", serialized.casefold())
+        self.assertNotIn("command", tools["codex_agent_show"].inputSchema["properties"])
 
     def test_system_tools_are_read_only_in_both_profiles(self) -> None:
         for profile in ("codex", "chatgpt"):

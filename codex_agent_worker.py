@@ -21,6 +21,21 @@ def write_json(path: Path, value: dict) -> None:
     temp.replace(path)
 
 
+def session_id_from_events(path: Path) -> str | None:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if event.get("type") == "thread.started" and isinstance(event.get("thread_id"), str):
+                    return event["thread_id"]
+    except OSError:
+        return None
+    return None
+
+
 def main() -> int:
     request_path = Path(sys.argv[1]).resolve()
     agent_dir = request_path.parent
@@ -31,6 +46,7 @@ def main() -> int:
     status.update({
         "status": "running",
         "pid": os.getpid(),
+        "worker_pid": os.getpid(),
         "started_at": now(),
         "updated_at": now(),
         "task_received": isinstance(request.get("task"), str) and bool(request["task"]),
@@ -69,7 +85,7 @@ def main() -> int:
     current = json.loads(status_path.read_text(encoding="utf-8"))
     requested_stop = current.get("status") == "stopping"
     outcome = "closed" if requested_stop else ("completed" if code == 0 else "failed")
-    current.update({"status": outcome, "outcome": outcome, "exit_code": code, "finished_at": now(), "updated_at": now()})
+    current.update({"status": outcome, "outcome": outcome, "exit_code": code, "session_id": session_id_from_events(agent_dir / "events.jsonl"), "result_scope": "initial_run", "finished_at": now(), "updated_at": now()})
     write_json(status_path, current)
     return code
 
