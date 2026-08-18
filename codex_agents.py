@@ -7,6 +7,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -171,7 +172,7 @@ def _agent_dir(state_root: Path, agent_id: str) -> Path:
 
 
 def _public_status(status: dict[str, Any]) -> dict[str, Any]:
-    return {key: status.get(key) for key in ("agent_id", "status", "outcome", "created_at", "updated_at", "started_at", "finished_at", "handoff_from", "exit_code", "interactive_exit_code", "task_received", "handoff_received", "workspace_accessible", "session_id", "visible", "visibility_state", "same_session", "user_interaction", "result_scope")}
+    return {key: status.get(key) for key in ("agent_id", "status", "outcome", "created_at", "updated_at", "started_at", "finished_at", "handoff_from", "exit_code", "interactive_exit_code", "task_received", "handoff_received", "workspace_accessible", "session_id", "visible", "visibility_state", "terminal_target", "same_session", "user_interaction", "result_scope")}
 
 
 def _launch_terminal(agent_dir: Path, workspace: Path) -> dict[str, Any]:
@@ -202,10 +203,15 @@ def _launch_terminal(agent_dir: Path, workspace: Path) -> dict[str, Any]:
         )
     except OSError as exc:
         raise ProjectContextError("Не вдалося відкрити narrowly-scoped Konsole для agent.") from exc
+    if had_terminal:
+        registered = _konsole_instance_registered(process.pid)
+        terminal_target = "new_window" if registered is True else ("existing_tab" if registered is False else "reuse_requested_unverified")
+    else:
+        terminal_target = "new_window"
     status = _read_json(status_path)
-    status.update({"terminal_launcher_pid": process.pid, "updated_at": _now()})
+    status.update({"terminal_launcher_pid": process.pid, "terminal_target": terminal_target, "updated_at": _now()})
     _write_json(status_path, status)
-    return {"requested": True, "opened": True, "already_visible": False, "same_session": True, "mode": "read_only_then_interactive_resume", "user_interaction": False, "terminal_target": "existing_tab" if had_terminal else "new_window"}
+    return {"requested": True, "opened": True, "already_visible": False, "same_session": True, "mode": "read_only_then_interactive_resume", "user_interaction": False, "terminal_target": terminal_target, "reuse_requested": had_terminal}
 
 
 def _konsole_is_running() -> bool:
@@ -221,6 +227,32 @@ def _konsole_is_running() -> bool:
                 continue
     except OSError:
         return False
+    return False
+
+
+def _konsole_instance_registered(pid: int) -> bool | None:
+    qdbus = shutil.which("qdbus") or shutil.which("qdbus6")
+    if not qdbus or Path(qdbus).name not in {"qdbus", "qdbus6"}:
+        return None
+    expected = f"org.kde.konsole-{pid}"
+    for _ in range(5):
+        try:
+            completed = subprocess.run(
+                [qdbus],
+                shell=False,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                capture_output=True,
+                timeout=2,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if completed.returncode != 0:
+            return None
+        if expected in {line.strip() for line in completed.stdout.splitlines()}:
+            return True
+        time.sleep(0.05)
     return False
 
 

@@ -389,7 +389,11 @@ argv із власним helper, тому API не є process launcher. Якщо
 працює, Arvis використовує штатні `--force-reuse --new-tab` із тим самим fixed
 helper argv; небезпечний `Session.runCommand` DBus API не вмикається й не
 викликається. Model не передає terminal flags або command. Якщо Konsole не
-працює, запускається нове Konsole window з fixed helper argv.
+працює, запускається нове Konsole window з fixed helper argv. Після reuse
+request Arvis read-only перевіряє, чи launcher PID зареєстрував окремий Konsole
+DBus service, і повертає фактичний `terminal_target`. Деякі локальні Konsole
+налаштування ігнорують reuse; у такому разі чесно повідомляється `new_window`,
+а небезпечна DBus policy не послаблюється.
 
 Codex CLI не надає concurrent TUI attach до активного `codex exec`. Тому під
 час первинного run terminal є read-only viewer того самого JSONL stream. Після

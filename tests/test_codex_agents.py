@@ -88,9 +88,10 @@ class CodexAgentsTests(unittest.TestCase):
         self.assertTrue(created["visibility"]["same_session"])
 
     @patch("codex_agents.subprocess.Popen")
+    @patch("codex_agents._konsole_instance_registered", return_value=False)
     @patch("codex_agents._konsole_is_running", return_value=True)
     @patch("codex_agents.shutil.which", return_value="/usr/bin/konsole")
-    def test_terminal_launcher_is_fixed_and_reuses_existing_konsole(self, _which: Mock, _running: Mock, popen: Mock) -> None:
+    def test_terminal_launcher_is_fixed_and_reuses_existing_konsole(self, _which: Mock, _running: Mock, _registered: Mock, popen: Mock) -> None:
         popen.return_value.pid = 22222
         agent_id = "b" * 32
         directory = self.state / agent_id
@@ -128,6 +129,26 @@ class CodexAgentsTests(unittest.TestCase):
         self.assertNotIn("Inspect", argv)
         self.assertFalse(popen.call_args.kwargs["shell"])
         self.assertEqual(result["terminal_target"], "new_window")
+
+    @patch("codex_agents.subprocess.Popen")
+    @patch("codex_agents._konsole_instance_registered", return_value=True)
+    @patch("codex_agents._konsole_is_running", return_value=True)
+    @patch("codex_agents.shutil.which", return_value="/usr/bin/konsole")
+    def test_terminal_launcher_reports_new_window_when_konsole_refuses_reuse(self, _which: Mock, _running: Mock, _registered: Mock, popen: Mock) -> None:
+        popen.return_value.pid = 33333
+        agent_id = "d" * 32
+        directory = self.state / agent_id
+        directory.mkdir(parents=True)
+        request = {"agent_id": agent_id, "workspace": str(self.workspace), "mode": "read_only", "task": "Inspect"}
+        (directory / "request.json").write_text(json.dumps(request), encoding="utf-8")
+        (directory / "status.json").write_text(json.dumps({"agent_id": agent_id, "status": "completed"}), encoding="utf-8")
+
+        result = codex_agents.show_agent(agent_id, workspace_hint=str(self.workspace), access_config=self.config)
+        status = json.loads((directory / "status.json").read_text(encoding="utf-8"))
+
+        self.assertTrue(result["reuse_requested"])
+        self.assertEqual(result["terminal_target"], "new_window")
+        self.assertEqual(status["terminal_target"], "new_window")
 
     @patch("codex_agents.subprocess.Popen")
     def test_workspace_write_requires_explicit_allowed_root(self, popen: Mock) -> None:
