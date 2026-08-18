@@ -356,6 +356,9 @@ flags або executable.
 Agent state root обов'язково має бути фізично поза project workspace. Worker
 зберігає request, bounded events, stderr, status і final result локально.
 `handoff_from` приймає тільки terminal predecessor зі збереженим result.
+Для одноразового імпорту від агента, який ще не керувався цим lifecycle,
+`handoff_text` приймає окремий bounded handoff; status підтверджує його через
+`handoff_received`.
 Predecessor не закривається автоматично: caller спочатку створює successor,
 перевіряє `task_received` та `workspace_accessible`, і лише потім викликає
 `close` для predecessor. Помилка successor не видаляє predecessor state.

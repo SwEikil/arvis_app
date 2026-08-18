@@ -34,6 +34,7 @@ def main() -> int:
         "started_at": now(),
         "updated_at": now(),
         "task_received": isinstance(request.get("task"), str) and bool(request["task"]),
+        "handoff_received": request.get("handoff_supplied") is True,
         "workspace_accessible": workspace.is_dir() and os.access(workspace, os.R_OK),
     })
     write_json(status_path, status)

@@ -18,6 +18,7 @@ from project_context import ProjectContextError, resolve_project_root
 
 MAX_TASK_CHARS = 40_000
 MAX_RESULT_CHARS = 50_000
+MAX_HANDOFF_CHARS = 30_000
 AGENT_ID = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -25,13 +26,17 @@ def control_enabled() -> bool:
     return os.getenv("ARVIS_CODEX_AGENT_CONTROL_ENABLED", "").strip().casefold() in {"1", "true", "yes", "on"}
 
 
-def create_agent(task: str, project_root: str | None, mode: str = "read_only", handoff_from: str | None = None, *, access_config: McpAccessConfig) -> dict[str, Any]:
+def create_agent(task: str, project_root: str | None, mode: str = "read_only", handoff_from: str | None = None, handoff_text: str | None = None, *, access_config: McpAccessConfig) -> dict[str, Any]:
     if not control_enabled():
         raise ProjectContextError("Codex agent control не ввімкнено локально.")
     if not task or len(task) > MAX_TASK_CHARS:
         raise ProjectContextError("Задача агента порожня або перевищує ліміт.")
     if mode not in {"read_only", "workspace_write"}:
         raise ProjectContextError("mode має бути read_only або workspace_write.")
+    if handoff_text is not None and (not handoff_text.strip() or len(handoff_text) > MAX_HANDOFF_CHARS):
+        raise ProjectContextError("Initial handoff порожній або перевищує ліміт.")
+    if handoff_from and handoff_text is not None:
+        raise ProjectContextError("Використовуй handoff_from або handoff_text, але не обидва.")
     workspace = resolve_project_root(project_root, access_config=access_config)
     state_root = _state_root(workspace)
     parent_result = None
@@ -44,8 +49,9 @@ def create_agent(task: str, project_root: str | None, mode: str = "read_only", h
     agent_id = uuid.uuid4().hex
     agent_dir = state_root / agent_id
     agent_dir.mkdir(mode=0o700)
-    prompt = task if parent_result is None else f"Continue from this preserved handoff/result:\n\n{parent_result}\n\nNew task:\n{task}"
-    request = {"agent_id": agent_id, "workspace": str(workspace), "task": prompt, "mode": mode, "handoff_from": handoff_from, "created_at": _now()}
+    preserved_handoff = parent_result if parent_result is not None else handoff_text
+    prompt = task if preserved_handoff is None else f"Continue from this preserved handoff/result:\n\n{preserved_handoff}\n\nNew task:\n{task}"
+    request = {"agent_id": agent_id, "workspace": str(workspace), "task": prompt, "mode": mode, "handoff_from": handoff_from, "handoff_supplied": preserved_handoff is not None, "created_at": _now()}
     _write_json(agent_dir / "request.json", request)
     _write_json(agent_dir / "status.json", {"agent_id": agent_id, "status": "initializing", "outcome": None, "pid": None, "created_at": request["created_at"], "updated_at": _now(), "handoff_from": handoff_from})
     worker = Path(__file__).with_name("codex_agent_worker.py")
@@ -59,7 +65,7 @@ def create_agent(task: str, project_root: str | None, mode: str = "read_only", h
     status = _read_json(agent_dir / "status.json")
     status.update({"pid": process.pid, "updated_at": _now()})
     _write_json(agent_dir / "status.json", status)
-    return {"agent_id": agent_id, "status": "initializing", "worker_pid": process.pid, "handoff_from": handoff_from}
+    return {"agent_id": agent_id, "status": "initializing", "worker_pid": process.pid, "handoff_from": handoff_from, "handoff_supplied": preserved_handoff is not None}
 
 
 def get_status(agent_id: str, *, workspace_hint: str | None, access_config: McpAccessConfig) -> dict[str, Any]:
@@ -124,7 +130,7 @@ def _agent_dir(state_root: Path, agent_id: str) -> Path:
 
 
 def _public_status(status: dict[str, Any]) -> dict[str, Any]:
-    return {key: status.get(key) for key in ("agent_id", "status", "outcome", "created_at", "updated_at", "started_at", "finished_at", "handoff_from", "exit_code", "task_received", "workspace_accessible")}
+    return {key: status.get(key) for key in ("agent_id", "status", "outcome", "created_at", "updated_at", "started_at", "finished_at", "handoff_from", "exit_code", "task_received", "handoff_received", "workspace_accessible")}
 
 
 def _read_json(path: Path) -> dict[str, Any]:

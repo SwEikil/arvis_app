@@ -196,9 +196,9 @@ def smapi_mod_status(mod_id: str, max_matches: int = 80) -> dict[str, Any]:
 
 if codex_agents.control_enabled():
     @mcp.tool(annotations=CONTROL_ANNOTATIONS)
-    def codex_agent_create(task: str, project_root: str | None = None, mode: str = "read_only", handoff_from: str | None = None) -> dict[str, Any]:
+    def codex_agent_create(task: str, project_root: str | None = None, mode: str = "read_only", handoff_from: str | None = None, handoff_text: str | None = None) -> dict[str, Any]:
         """Створити bounded Codex agent у дозволеному workspace без arbitrary shell."""
-        return _safe_call(codex_agents.create_agent, task=task, project_root=project_root, mode=mode, handoff_from=handoff_from, access_config=ACCESS_CONFIG)
+        return _safe_call(codex_agents.create_agent, task=task, project_root=project_root, mode=mode, handoff_from=handoff_from, handoff_text=handoff_text, access_config=ACCESS_CONFIG)
 
     @mcp.tool(annotations=READ_ONLY_ANNOTATIONS)
     def codex_agent_status(agent_id: str, project_root: str | None = None) -> dict[str, Any]:

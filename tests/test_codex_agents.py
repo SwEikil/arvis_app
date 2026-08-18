@@ -47,6 +47,18 @@ class CodexAgentsTests(unittest.TestCase):
         self.assertEqual(status["status"], "initializing")
         self.assertFalse(self.state.is_relative_to(self.workspace))
 
+    @patch("codex_agents.subprocess.Popen")
+    def test_initial_handoff_is_bounded_and_recorded(self, popen: Mock) -> None:
+        popen.return_value.pid = 12345
+        created = codex_agents.create_agent("Continue", str(self.workspace), handoff_text="Preserved facts", access_config=self.config)
+        request = json.loads((self.state / created["agent_id"] / "request.json").read_text(encoding="utf-8"))
+        self.assertTrue(created["handoff_supplied"])
+        self.assertTrue(request["handoff_supplied"])
+        self.assertIn("Preserved facts", request["task"])
+
+        with self.assertRaises(ProjectContextError):
+            codex_agents.create_agent("Continue", str(self.workspace), handoff_text="x" * (codex_agents.MAX_HANDOFF_CHARS + 1), access_config=self.config)
+
     def test_state_root_inside_workspace_is_rejected(self) -> None:
         with patch.dict(os.environ, {"ARVIS_CODEX_AGENT_STATE_ROOT": str(self.workspace / "state")}):
             with self.assertRaises(ProjectContextError):
