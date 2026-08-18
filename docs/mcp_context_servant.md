@@ -386,7 +386,11 @@ Visible mode окремо opt-in через `ARVIS_CODEX_VISIBLE_TERMINAL_ENABLE
 параметр `visible=true` у `codex_agent_create`; наявний agent можна показати
 через `codex_agent_show(agent_id)`. Arvis запускає тільки фіксований Konsole
 argv із власним helper, тому API не є process launcher. Якщо Konsole вже
-працює, `--new-tab` просить використати його; інакше Konsole створює вікно.
+працює, Arvis через фіксовані `Window.newSession`, `Session.runCommand` і
+`Window.setCurrentSession` DBus methods створює та фокусує tab у наявному
+window. Model не передає DBus service, method або command. Якщо придатної
+Konsole session немає чи вузький DBus path недоступний, запускається нове
+Konsole window з тим самим fixed helper argv.
 
 Codex CLI не надає concurrent TUI attach до активного `codex exec`. Тому під
 час первинного run terminal є read-only viewer того самого JSONL stream. Після

@@ -136,6 +136,7 @@ class McpToolMetadataTests(unittest.TestCase):
             "ARVIS_MCP_PROFILE": profile,
             "ARVIS_MCP_PROJECT_ROOT": str(root),
             "ARVIS_MCP_ALLOWED_ROOTS": str(root),
+            "ARVIS_MCP_WRITABLE_ROOTS": str(root),
             "ARVIS_CODEX_AGENT_CONTROL_ENABLED": "false",
         }
         with patch.dict(os.environ, env):
@@ -222,6 +223,7 @@ class McpToolMetadataTests(unittest.TestCase):
                     "ARVIS_MCP_PROFILE": profile,
                     "ARVIS_MCP_PROJECT_ROOT": str(root),
                     "ARVIS_MCP_ALLOWED_ROOTS": str(root),
+                    "ARVIS_MCP_WRITABLE_ROOTS": str(root),
                     "ARVIS_CODEX_AGENT_CONTROL_ENABLED": "true",
                 }
                 with patch.dict(os.environ, env):
@@ -244,6 +246,7 @@ class McpToolMetadataTests(unittest.TestCase):
                 "ARVIS_MCP_PROFILE": "chatgpt",
                 "ARVIS_MCP_PROJECT_ROOT": str(root),
                 "ARVIS_MCP_ALLOWED_ROOTS": str(root),
+                "ARVIS_MCP_WRITABLE_ROOTS": str(root),
                 "ARVIS_CODEX_AGENT_CONTROL_ENABLED": "true",
             }
             with patch.dict(os.environ, env):
