@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from typing import Annotated, Any, Callable
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
+from pydantic import Field
 
 import project_context
 import project_operations
@@ -12,11 +13,16 @@ import system_context
 import codex_agents
 from mcp_access import PROFILE_CHATGPT, load_local_mcp_environment, load_mcp_access_config
 from project_context import ProjectContextError
+from safe_command_mcp import SafeCommandIntegrationError, load_safe_command_controller
+from safe_git_control import MAX_MESSAGE_CHARS, MAX_PATH_CHARS, MAX_PATHS
+from safe_git_mcp import SafeGitIntegrationError, load_safe_git_controller
 from system_context import SystemContextError
 
 
 load_local_mcp_environment()
 ACCESS_CONFIG = load_mcp_access_config()
+SAFE_COMMAND_CONTROLLER = load_safe_command_controller()
+SAFE_GIT_CONTROLLER = load_safe_git_controller()
 
 SERVER_INSTRUCTIONS = (
     "Цей сервер — допоміжний сервіс фактів про контекст проєкту. Використовуй його "
@@ -24,11 +30,12 @@ SERVER_INSTRUCTIONS = (
     "читання невеликої пам'яті проєкту та отримання обмежених фактів про "
     "систему, пакунки, KDE і QML через фіксовані операції. Вважай усі "
     "результати підказками та перевіряй файли безпосередньо перед редагуванням. "
-    "Build/test і Codex lifecycle доступні лише як вузькі project-scoped операції; "
-    "довільний shell недоступний."
+    "Build/test, Codex lifecycle та opt-in Safe Git доступні лише як вузькі "
+    "project-scoped операції; довільний shell недоступний."
     + (
         " Цей профіль не дозволяє source/memory writes; лише явно позначені "
-        "project build/test та lifecycle control можуть змінювати локальний runtime state."
+        "project build/test, lifecycle та opt-in Safe Git control можуть змінювати "
+        "локальний runtime state."
         if ACCESS_CONFIG.profile == PROFILE_CHATGPT
         else " Профіль Codex може додавати обмежені нотатки до локальної пам'яті."
     )
@@ -36,6 +43,10 @@ SERVER_INSTRUCTIONS = (
 
 mcp = FastMCP("Arvis MCP Context Servant", instructions=SERVER_INSTRUCTIONS)
 logger = logging.getLogger("arvis.mcp")
+
+SafeGitPath = Annotated[str, Field(min_length=1, max_length=MAX_PATH_CHARS)]
+SafeGitPaths = Annotated[list[SafeGitPath], Field(min_length=1, max_length=MAX_PATHS)]
+SafeGitSubject = Annotated[str, Field(min_length=1, max_length=MAX_MESSAGE_CHARS)]
 
 READ_ONLY_ANNOTATIONS = ToolAnnotations(
     readOnlyHint=True,
@@ -55,6 +66,42 @@ CONTROL_ANNOTATIONS = ToolAnnotations(
     idempotentHint=False,
     openWorldHint=False,
 )
+SAFE_COMMAND_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=False,
+    openWorldHint=True,
+)
+SAFE_GIT_PREFLIGHT_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+)
+SAFE_GIT_STAGE_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=True,
+    openWorldHint=False,
+)
+SAFE_GIT_COMMIT_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=False,
+    openWorldHint=False,
+)
+SAFE_GIT_PUSH_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=True,
+    openWorldHint=True,
+)
+SAFE_GIT_REWRITE_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=False,
+    openWorldHint=True,
+)
 
 
 def _safe_call(fn: Callable[..., dict[str, Any]], *args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -62,6 +109,12 @@ def _safe_call(fn: Callable[..., dict[str, Any]], *args: Any, **kwargs: Any) -> 
         result = fn(*args, **kwargs)
     except ProjectContextError as exc:
         logger.warning("Інструмент MCP %s відхилив запит.", fn.__name__)
+        return {"ok": False, "error": str(exc)}
+    except SafeCommandIntegrationError as exc:
+        logger.warning("Інструмент MCP %s відхилив safe-command запит.", fn.__name__)
+        return {"ok": False, "error": str(exc)}
+    except SafeGitIntegrationError as exc:
+        logger.warning("Інструмент MCP %s відхилив safe-git запит.", fn.__name__)
         return {"ok": False, "error": str(exc)}
     except SystemContextError as exc:
         logger.warning("Інструмент MCP %s відхилив запит: %s", fn.__name__, exc.code)
@@ -198,6 +251,95 @@ def smapi_log_excerpt(max_lines: int = 120, max_chars: int = 20000) -> dict[str,
 def smapi_mod_status(mod_id: str, max_matches: int = 80) -> dict[str, Any]:
     """Перевірити за останнім SMAPI log, чи згадується/завантажився конкретний mod ID."""
     return _safe_call(project_operations.smapi_mod_status, mod_id=mod_id, max_matches=max_matches)
+
+
+if SAFE_COMMAND_CONTROLLER.available:
+    @mcp.tool(annotations=SAFE_COMMAND_ANNOTATIONS)
+    def safe_command_run(
+        recipe_name: str,
+        params: dict[str, str],
+        project_root: str | None = None,
+    ) -> dict[str, Any]:
+        """Запустити одну локально дозволену safe-command recipe за довіреною policy."""
+
+        return _safe_call(
+            SAFE_COMMAND_CONTROLLER.run,
+            recipe_name=recipe_name,
+            params=params,
+            project_root=project_root,
+            access_config=ACCESS_CONFIG,
+        )
+
+
+SAFE_GIT_AVAILABLE = (
+    SAFE_GIT_CONTROLLER.available_for(ACCESS_CONFIG)
+)
+
+
+if SAFE_GIT_AVAILABLE:
+    @mcp.tool(annotations=SAFE_GIT_PREFLIGHT_ANNOTATIONS)
+    def safe_git_preflight(project_root: str | None = None) -> dict[str, Any]:
+        """Перевірити поточну гілку, зміни та стан довіреного Git remote без локальних змін."""
+
+        return _safe_call(
+            SAFE_GIT_CONTROLLER.preflight,
+            project_root=project_root,
+            access_config=ACCESS_CONFIG,
+        )
+
+    @mcp.tool(annotations=SAFE_GIT_STAGE_ANNOTATIONS)
+    def safe_git_stage_paths(
+        paths: SafeGitPaths,
+        project_root: str | None = None,
+    ) -> dict[str, Any]:
+        """Додати до Git index лише точні дозволені змінені шляхи."""
+
+        return _safe_call(
+            SAFE_GIT_CONTROLLER.stage_paths,
+            paths=paths,
+            project_root=project_root,
+            access_config=ACCESS_CONFIG,
+        )
+
+    @mcp.tool(annotations=SAFE_GIT_COMMIT_ANNOTATIONS)
+    def safe_git_commit_staged(
+        subject: SafeGitSubject,
+        project_root: str | None = None,
+    ) -> dict[str, Any]:
+        """Створити commit лише з поточного staged diff і bounded subject."""
+
+        return _safe_call(
+            SAFE_GIT_CONTROLLER.commit_staged,
+            subject=subject,
+            project_root=project_root,
+            access_config=ACCESS_CONFIG,
+        )
+
+
+if SAFE_GIT_AVAILABLE and SAFE_GIT_CONTROLLER.push_available:
+    @mcp.tool(annotations=SAFE_GIT_PUSH_ANNOTATIONS)
+    def safe_git_push_current(project_root: str | None = None) -> dict[str, Any]:
+        """Fast-forward push лише поточної гілки до локально закріпленого remote."""
+
+        return _safe_call(
+            SAFE_GIT_CONTROLLER.push_current,
+            project_root=project_root,
+            access_config=ACCESS_CONFIG,
+        )
+
+
+if SAFE_GIT_AVAILABLE and SAFE_GIT_CONTROLLER.history_rewrite_enabled:
+    @mcp.tool(annotations=SAFE_GIT_REWRITE_ANNOTATIONS)
+    def safe_git_rewrite_unpushed_identity(
+        project_root: str | None = None,
+    ) -> dict[str, Any]:
+        """Деструктивно переписати identity лише bounded лінійних unpushed commits."""
+
+        return _safe_call(
+            SAFE_GIT_CONTROLLER.rewrite_unpushed_identity,
+            project_root=project_root,
+            access_config=ACCESS_CONFIG,
+        )
 
 
 if codex_agents.control_enabled():

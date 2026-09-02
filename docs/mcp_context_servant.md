@@ -49,6 +49,18 @@ Standalone server спочатку читає явно задане середо
   без lifecycle або 29 із lifecycle. Різниця рівно в один інструмент між
   профілями є навмисною.
 
+За замовчуванням safe-command control вимкнений і наведені counts не
+змінюються. Після явного локального opt-in обидва профілі отримують рівно один
+додатковий control tool `safe_command_run`.
+
+Safe Git control також вимкнений за замовчуванням. Валідний master opt-in додає
+три інструменти: preflight, exact-path stage і staged commit. Окремі локальні
+opt-ins додають по одному інструменту для push current branch та destructive
+rewrite unpushed identity. Тому counts збільшуються на `3`–`5` лише відповідно
+до локально валідованої policy, валідної MCP access config і хоча б одного
+наявного writable root. Некоректна чи неповна конфігурація не реєструє жодного
+Safe Git tool.
+
 Обидва профілі публікують такі read-only інструменти:
 
 - `project_map` — обмежена карта безпечних текстових файлів, розмірів, типів і
@@ -87,14 +99,137 @@ Standalone server спочатку читає явно задане середо
 | Інструменти читання | `true` | `false` | `true` | `false` |
 | `memory_append` | `false` | `false` | `false` | `false` |
 | Build/test і lifecycle control | `false` | `false` | `false` | `false` |
+| `safe_command_run` (якщо локально ввімкнено) | `false` | `true` | `false` | `true` |
+| `safe_git_preflight` | `true` | `false` | `true` | `true` |
+| `safe_git_stage_paths` | `false` | `true` | `true` | `false` |
+| `safe_git_commit_staged` | `false` | `true` | `false` | `false` |
+| `safe_git_push_current` | `false` | `true` | `true` | `true` |
+| `safe_git_rewrite_unpushed_identity` | `false` | `true` | `false` | `true` |
 
-Усі поточні інструменти читання мають `openWorldHint=false`. Зокрема,
+Усі базові інструменти читання мають `openWorldHint=false`. Зокрема,
 `package_search` і частина `package_info`, що перевіряє репозиторій, викликають
 `rpm-ostree search --cache-only`: вони не оновлюють метадані та не звертаються
 до репозиторію через мережу. Відсутність кешованих метаданих повертається як
 контрольована помилка без непомітного переходу до online-команди. Майбутній
 мережевий adapter потребуватиме явної зміни контракту й
-`openWorldHint=true`.
+`openWorldHint=true`. Safe-command recipes також мають `openWorldHint=true`,
+бо локально дозволений executable може звертатися до host або мережі. Opt-in `safe_git_preflight` уже має
+`openWorldHint=true`, бо перевіряє live head pinned remote.
+
+## Локальна safe-command policy
+
+`safe_command_run` є opt-in adapter над generic safe-command core. Публічний
+репозиторій не містить machine-specific recipes, executable paths або готових
+команд. Локальний адміністратор зберігає policy JSON поза tracked файлами та
+вмикає adapter тільки в ignored `.env.local`, `.env` або environment процесу:
+
+```dotenv
+ARVIS_SAFE_COMMAND_CONTROL_ENABLED=true
+ARVIS_SAFE_COMMAND_CONFIG=/absolute/path/to/safe-commands.json
+ARVIS_SAFE_COMMAND_HOST_CONTROL_ENABLED=false
+```
+
+Самої наявності `ARVIS_SAFE_COMMAND_CONFIG` недостатньо: без exact `true` у
+`ARVIS_SAFE_COMMAND_CONTROL_ENABLED` tool не реєструється. Config path має бути
+абсолютним, ніколи не надходить з MCP input і не повертається в schema чи
+result. Policy завантажується один раз під час старту сервера; після її зміни
+сервер треба перезапустити. Відсутній або некоректний config не валить MCP
+server і не реєструє tool: сам master opt-in без ефективно завантаженої policy
+недостатній.
+
+Recipe config — довірена локальна межа безпеки. Той, хто може редагувати цей
+файл, фактично авторизує semantics executable, argv, cwd, access і лімітів.
+MCP-клієнт, ChatGPT і Codex через цей tool не можуть читати, редагувати,
+вибирати шлях або reload цієї policy. Їм доступні тільки `recipe_name`, bounded
+string `params` і опційний `project_root`; shell, command text, executable,
+argv, env та execution-policy fields відсутні.
+
+Access береться лише з довіреної recipe. Будь-який переданий або потрібний
+`project_root` проходить загальний `ARVIS_MCP_ALLOWED_ROOTS`; `workspace_write`
+додатково потребує `ARVIS_MCP_WRITABLE_ROOTS`. MCP input не може підвищити
+read-only recipe до write. Recipe з `host_control` лишається забороненою, доки
+локальний адміністратор окремо не встановить
+`ARVIS_SAFE_COMMAND_HOST_CONTROL_ENABLED=true`; клієнт не може перевизначити
+цей прапорець. Результат містить лише bounded/redacted execution fields і не
+розкриває policy чи її шлях.
+
+## Локальна Safe Git policy
+
+Safe Git MCP tools є вузьким adapter над `safe_git_control.py`, а не shell чи
+generic Git endpoint. Усі значення довіреної policy задає тільки локальний
+адміністратор в ignored `.env.local`, `.env` або environment процесу. Публічний
+шаблон містить лише вигадані placeholders:
+
+```dotenv
+ARVIS_SAFE_GIT_CONTROL_ENABLED=true
+ARVIS_SAFE_GIT_REMOTE_NAME=origin
+ARVIS_SAFE_GIT_EXPECTED_REMOTE_URL=https://git.example.invalid/owner/repository.git
+ARVIS_SAFE_GIT_PUBLIC_NAME=Public Contributor
+ARVIS_SAFE_GIT_PUBLIC_EMAIL=contributor@example.invalid
+ARVIS_SAFE_GIT_PUSH_ENABLED=false
+ARVIS_SAFE_GIT_HISTORY_REWRITE_ENABLED=false
+```
+
+Без exact `true` у `ARVIS_SAFE_GIT_CONTROL_ENABLED` жоден Safe Git tool не
+реєструється. Після master opt-in policy має повністю пройти локальну валідацію:
+remote name, exact expected push URL і fixed public identity обов'язкові;
+некоректна чи неповна policy не реєструє Safe Git tools.
+`ARVIS_SAFE_GIT_PUSH_ENABLED` і
+`ARVIS_SAFE_GIT_HISTORY_REWRITE_ENABLED` приймають тільки `true`/`false`, за
+відсутності дорівнюють `false`, а за некоректного значення роблять policy
+недоступною. Push і rewrite tools не реєструються без власного `true`.
+
+MCP caller може передати тільки такі мінімальні параметри:
+
+- `safe_git_preflight`: опційний `project_root`;
+- `safe_git_stage_paths`: точний список `paths` і опційний `project_root`;
+- `safe_git_commit_staged`: bounded `subject` і опційний `project_root`;
+- `safe_git_push_current`: опційний `project_root`;
+- `safe_git_rewrite_unpushed_identity`: опційний `project_root`.
+
+Executable, remote name/URL, public identity, branch, refspec, enable flags і
+довільні Git arguments відсутні в schemas. Preflight проходить
+`ARVIS_MCP_ALLOWED_ROOTS`; stage, commit, push і rewrite додатково потребують
+writable authorization із загальної MCP access policy. Для `chatgpt` це явний
+`ARVIS_MCP_WRITABLE_ROOTS`; compatibility profile `codex` зберігає свій
+наявний default writable-root contract. Engine повторно перевіряє repository
+top-level, resolved git-dir, resolved git-common-dir, поточну branch, pinned
+remote URL і всі operation-specific ліміти. Перед write він також перевіряє,
+що git-dir, common-dir та symbolic links усередині mutable metadata не виходять
+за authorized writable roots. Write operations додатково вимагають звичайний
+direct `.git` directory: linked worktrees, symlinked `.git` і separate/external
+git-dir відхиляються навіть тоді, коли broad writable root охоплює обидва шляхи.
+Перевірка metadata bounded до 200 000 entries; більший repository fail-closed.
+
+Stage працює лише з exact currently changed paths. Commit використовує лише
+поточний staged diff, bounded one-line subject, fixed public identity, вимкнені
+hooks і signing. Push може лише fast-forward поточну same-named branch до
+pinned remote. Rewrite є явно destructive та обмежений лінійними unpushed
+commits; він не виконує push. Force, tags, arbitrary refspec/branch, amend,
+reset, checkout, rebase, hooks і signing не підтримуються.
+
+Remote policy підтримує plain HTTPS URL без embedded credentials; SSH, scp-like,
+`ext::`, довільні remote helpers і URL rewrite rules відхиляються. Remote
+commands отримують exact pinned URL, а не repo-selected helper. Repository і
+worktree config не можуть задавати credential helpers, askpass, SSH commands,
+remote upload/receive commands, external diff/merge drivers, HTTP proxy/TLS/
+resolve transport overrides (включно з URL-scoped та included config) або інші process
+trampolines. Hooks, pagers, editors, fsmonitor, auto-maintenance і signing
+нейтралізуються fixed settings. Content clean/smudge/process filters не
+підтримуються: якщо такий driver є в effective Git config, Safe Git fail-closed
+до status/stage. Partial-clone/promisor repositories та alternate-refs commands
+також не підтримуються; submodule recursion і recursive push вимкнені. Лише для
+exact pinned standard HTTPS `github.com` remote дозволена вже налаштована
+host-level credential helper policy. Для інших hosts helper list скидається в
+command scope; interactive prompt/askpass і credentials у URL не підтримуються.
+Absolute local remotes можна перевіряти як pinned local state, але
+`safe_git_push_current` для них не реєструється: локальний receive-pack може
+запускати hooks, а publish підтримує лише pinned HTTPS.
+
+Sensitive policy fields, exact remote URL, public identity та абсолютні
+локальні paths не повертаються через MCP result, error або repr. Зміна local
+policy потребує перезапуску MCP server. Doctor перевіряє opt-ins і синтаксичну
+повноту policy, але не виконує Git operations і не показує приватні значення.
 
 ## Контракти read-only перевірки системи
 
@@ -233,6 +368,9 @@ environment не скануються.
 для bounded/redacted читання private handoff, не надаючи write access усьому
 parent root. У compatibility-профілі `codex` відсутнє значення успадковує
 read roots; production-конфігурації рекомендовано задавати його явно.
+Саме відсутня змінна зберігає цей `codex` default. Якщо змінна присутня, але
+порожня, містить порожній segment або некоректний path, access config fail-closed
+і не розширює write access до read roots.
 
 Шляхи канонізуються до авторизації. Виходи через абсолютний шлях, parent (`..`), корінь
 файлової системи або symlink відхиляються. `chatgpt` ніколи не переходить до

@@ -76,7 +76,18 @@ KNOWN_ENV_KEYS = {
     "ARVIS_MCP_PROFILE",
     "ARVIS_MCP_PROJECT_ROOT",
     "ARVIS_MCP_ALLOWED_ROOTS",
+    "ARVIS_MCP_WRITABLE_ROOTS",
     "ARVIS_SYSTEM_METRICS_STORAGE_PATH",
+    "ARVIS_SAFE_COMMAND_CONTROL_ENABLED",
+    "ARVIS_SAFE_COMMAND_CONFIG",
+    "ARVIS_SAFE_COMMAND_HOST_CONTROL_ENABLED",
+    "ARVIS_SAFE_GIT_CONTROL_ENABLED",
+    "ARVIS_SAFE_GIT_REMOTE_NAME",
+    "ARVIS_SAFE_GIT_EXPECTED_REMOTE_URL",
+    "ARVIS_SAFE_GIT_PUBLIC_NAME",
+    "ARVIS_SAFE_GIT_PUBLIC_EMAIL",
+    "ARVIS_SAFE_GIT_PUSH_ENABLED",
+    "ARVIS_SAFE_GIT_HISTORY_REWRITE_ENABLED",
     "MUSIC_FOLDER",
     "DOWNLOADS_FOLDER",
     "STEAM_COMMAND",
@@ -167,13 +178,11 @@ def run_doctor(options: DoctorOptions | None = None, project_root: Path | None =
 
 
 def _load_doctor_environment(root: Path) -> dict[str, str]:
-    env_file_values = _read_env_file(root / ".env")
-    env_local_values = _read_env_file(root / ".env.local")
-    return {
-        **env_file_values,
-        **env_local_values,
-        **{key: value for key, value in os.environ.items() if key in KNOWN_ENV_KEYS},
-    }
+    from mcp_access import read_local_mcp_environment_with_keys
+
+    effective, local_keys = read_local_mcp_environment_with_keys(root, environ=os.environ)
+    visible_keys = KNOWN_ENV_KEYS | local_keys
+    return {key: value for key, value in effective.items() if key in visible_keys}
 
 
 def render_text_report(checks: list[DoctorCheck], options: DoctorOptions | None = None) -> str:
@@ -381,8 +390,58 @@ def check_local_config(root: Path, env: dict[str, str], options: DoctorOptions) 
             )
 
     checks.extend(_check_system_metrics_storage_config(env))
+    checks.extend(_check_safe_git_config(env))
     checks.extend(_check_minecraft_config(env))
     return checks
+
+
+def _check_safe_git_config(env: dict[str, str]) -> list[DoctorCheck]:
+    from safe_git_mcp import CONTROL_ENABLED_ENV, load_safe_git_controller
+
+    raw_enabled = env.get(CONTROL_ENABLED_ENV)
+    if raw_enabled is None or not raw_enabled.strip() or raw_enabled.strip().casefold() == "false":
+        return [DoctorCheck("info", "Safe Git", "MCP Safe Git control is disabled")]
+    if raw_enabled.strip().casefold() != "true":
+        return [
+            DoctorCheck(
+                "warn",
+                "Safe Git",
+                "MCP Safe Git control enable flag is invalid; control remains disabled",
+                fix="Set ARVIS_SAFE_GIT_CONTROL_ENABLED to exact true or false in ignored local config.",
+            )
+        ]
+
+    controller = load_safe_git_controller(environ=env)
+    if not controller.available:
+        return [
+            DoctorCheck(
+                "fail",
+                "Safe Git",
+                "MCP Safe Git trusted policy is invalid or incomplete",
+                fix=(
+                    "Set every ARVIS_SAFE_GIT_* policy field in ignored local config; "
+                    "use only true or false for opt-in flags."
+                ),
+            )
+        ]
+
+    return [
+        DoctorCheck("ok", "Safe Git", "MCP Safe Git trusted policy is valid"),
+        DoctorCheck(
+            "ok" if controller.push_enabled else "info",
+            "Safe Git",
+            "MCP Safe Git push is explicitly enabled"
+            if controller.push_enabled
+            else "MCP Safe Git push is disabled",
+        ),
+        DoctorCheck(
+            "warn" if controller.history_rewrite_enabled else "info",
+            "Safe Git",
+            "MCP Safe Git history rewrite is explicitly enabled"
+            if controller.history_rewrite_enabled
+            else "MCP Safe Git history rewrite is disabled",
+        ),
+    ]
 
 
 def _check_system_metrics_storage_config(env: dict[str, str]) -> list[DoctorCheck]:
@@ -1096,22 +1155,6 @@ def _is_argv_list(command: object) -> bool:
     return isinstance(command, list) and bool(command) and all(isinstance(part, str) and part for part in command)
 
 
-def _read_env_file(path: Path) -> dict[str, str]:
-    if not path.exists():
-        return {}
-    values: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, value = stripped.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key:
-            values[key] = value
-    return values
-
-
 def _parse_command(value: str) -> list[str]:
     import shlex
 
@@ -1171,7 +1214,18 @@ def _write_safe_env_example(path: Path) -> bool:
                     "# ARVIS_MCP_PROFILE=codex",
                     "# ARVIS_MCP_PROJECT_ROOT=/path/to/arvis",
                     "# ARVIS_MCP_ALLOWED_ROOTS=/path/to/arvis",
+                    "# ARVIS_MCP_WRITABLE_ROOTS=/path/to/arvis",
                     "# ARVIS_SYSTEM_METRICS_STORAGE_PATH=/path/to/filesystem",
+                    "# ARVIS_SAFE_COMMAND_CONTROL_ENABLED=false",
+                    "# ARVIS_SAFE_COMMAND_CONFIG=/absolute/path/to/safe-commands.json",
+                    "# ARVIS_SAFE_COMMAND_HOST_CONTROL_ENABLED=false",
+                    "# ARVIS_SAFE_GIT_CONTROL_ENABLED=false",
+                    "# ARVIS_SAFE_GIT_REMOTE_NAME=origin",
+                    "# ARVIS_SAFE_GIT_EXPECTED_REMOTE_URL=https://git.example.invalid/owner/repository.git",
+                    "# ARVIS_SAFE_GIT_PUBLIC_NAME=Public Contributor",
+                    "# ARVIS_SAFE_GIT_PUBLIC_EMAIL=contributor@example.invalid",
+                    "# ARVIS_SAFE_GIT_PUSH_ENABLED=false",
+                    "# ARVIS_SAFE_GIT_HISTORY_REWRITE_ENABLED=false",
                     "",
                     "MUSIC_FOLDER=/path/to/music",
                     "DOWNLOADS_FOLDER=/path/to/downloads",

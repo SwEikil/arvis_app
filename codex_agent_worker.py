@@ -60,7 +60,7 @@ def main() -> int:
         write_json(status_path, status)
         return 127
     sandbox = "read-only" if request["mode"] == "read_only" else "workspace-write"
-    argv = [codex, "exec", "--json", "--color", "never", "--sandbox", sandbox, "-c", 'approval_policy="never"', "--cd", request["workspace"], "--output-last-message", str(agent_dir / "result.md"), request["task"]]
+    argv = [codex, "exec", "--skip-git-repo-check", "--json", "--color", "never", "--sandbox", sandbox, "-c", 'approval_policy="never"', "--cd", request["workspace"], "--output-last-message", str(agent_dir / "result.md"), request["task"]]
     allowed_env = {"HOME", "PATH", "LANG", "LC_ALL", "TMPDIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "CODEX_HOME"}
     child_env = {key: value for key, value in os.environ.items() if key in allowed_env}
     events = (agent_dir / "events.jsonl").open("w", encoding="utf-8")

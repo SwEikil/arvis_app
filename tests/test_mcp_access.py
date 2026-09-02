@@ -8,7 +8,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mcp_access import PROFILE_CHATGPT, PROFILE_CODEX, load_mcp_access_config
+from mcp_access import (
+    PROFILE_CHATGPT,
+    PROFILE_CODEX,
+    load_mcp_access_config,
+    read_local_mcp_environment,
+)
 
 
 class McpAccessConfigTests(unittest.TestCase):
@@ -34,6 +39,70 @@ class McpAccessConfigTests(unittest.TestCase):
 
         self.assertTrue(config.memory_writes_allowed)
         self.assertEqual(config.writable_roots, (root.resolve(),))
+
+    def test_explicit_empty_or_malformed_writable_roots_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            missing = root / "missing"
+            not_directory = root / "file"
+            not_directory.write_text("not a directory\n", encoding="utf-8")
+            for value in (
+                "",
+                "   ",
+                os.pathsep,
+                f"{root}{os.pathsep}",
+                "bad\0path",
+                1,
+                str(missing),
+                str(not_directory),
+                f"{root}{os.pathsep}{missing}",
+            ):
+                with self.subTest(value=repr(value)):
+                    config = load_mcp_access_config(
+                        environ={
+                            "ARVIS_MCP_PROFILE": "codex",
+                            "ARVIS_MCP_ALLOWED_ROOTS": str(root),
+                            "ARVIS_MCP_WRITABLE_ROOTS": value,
+                        },
+                        cwd=root,
+                    )
+
+                    self.assertEqual(config.writable_roots, ())
+                    self.assertIsNotNone(config.configuration_error)
+                    self.assertFalse(config.memory_writes_allowed)
+
+    def test_absent_writable_roots_keeps_codex_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = load_mcp_access_config(
+                environ={
+                    "ARVIS_MCP_PROFILE": "codex",
+                    "ARVIS_MCP_ALLOWED_ROOTS": str(root),
+                },
+                cwd=root,
+            )
+
+        self.assertEqual(config.writable_roots, (root.resolve(),))
+        self.assertIsNone(config.configuration_error)
+
+    def test_bare_dotenv_writable_roots_is_explicit_and_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / ".env").write_text(
+                "ARVIS_MCP_PROFILE=codex\n"
+                f"ARVIS_MCP_ALLOWED_ROOTS={root}\n"
+                "ARVIS_MCP_WRITABLE_ROOTS\n",
+                encoding="utf-8",
+            )
+
+            environment = read_local_mcp_environment(root, environ={})
+            config = load_mcp_access_config(environ=environment, cwd=root)
+
+        self.assertIn("ARVIS_MCP_WRITABLE_ROOTS", environment)
+        self.assertEqual(environment["ARVIS_MCP_WRITABLE_ROOTS"], "")
+        self.assertEqual(config.writable_roots, ())
+        self.assertIsNotNone(config.configuration_error)
+        self.assertFalse(config.memory_writes_allowed)
 
     def test_chatgpt_profile_is_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -138,6 +207,8 @@ class McpToolMetadataTests(unittest.TestCase):
             "ARVIS_MCP_ALLOWED_ROOTS": str(root),
             "ARVIS_MCP_WRITABLE_ROOTS": str(root),
             "ARVIS_CODEX_AGENT_CONTROL_ENABLED": "false",
+            "ARVIS_SAFE_COMMAND_CONTROL_ENABLED": "false",
+            "ARVIS_SAFE_GIT_CONTROL_ENABLED": "false",
         }
         with patch.dict(os.environ, env):
             import arvis_mcp_server
@@ -205,7 +276,13 @@ class McpToolMetadataTests(unittest.TestCase):
     def test_agent_lifecycle_tools_are_opt_in(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            with patch.dict(os.environ, {"ARVIS_CODEX_AGENT_CONTROL_ENABLED": "true"}):
+            with patch.dict(
+                os.environ,
+                {
+                    "ARVIS_CODEX_AGENT_CONTROL_ENABLED": "true",
+                    "ARVIS_SAFE_GIT_CONTROL_ENABLED": "false",
+                },
+            ):
                 import arvis_mcp_server
                 module = importlib.reload(arvis_mcp_server)
                 tools = {tool.name: tool for tool in asyncio.run(module.mcp.list_tools())}
@@ -225,6 +302,8 @@ class McpToolMetadataTests(unittest.TestCase):
                     "ARVIS_MCP_ALLOWED_ROOTS": str(root),
                     "ARVIS_MCP_WRITABLE_ROOTS": str(root),
                     "ARVIS_CODEX_AGENT_CONTROL_ENABLED": "true",
+                    "ARVIS_SAFE_COMMAND_CONTROL_ENABLED": "false",
+                    "ARVIS_SAFE_GIT_CONTROL_ENABLED": "false",
                 }
                 with patch.dict(os.environ, env):
                     import arvis_mcp_server
@@ -248,6 +327,8 @@ class McpToolMetadataTests(unittest.TestCase):
                 "ARVIS_MCP_ALLOWED_ROOTS": str(root),
                 "ARVIS_MCP_WRITABLE_ROOTS": str(root),
                 "ARVIS_CODEX_AGENT_CONTROL_ENABLED": "true",
+                "ARVIS_SAFE_COMMAND_CONTROL_ENABLED": "false",
+                "ARVIS_SAFE_GIT_CONTROL_ENABLED": "false",
             }
             with patch.dict(os.environ, env):
                 import arvis_mcp_server

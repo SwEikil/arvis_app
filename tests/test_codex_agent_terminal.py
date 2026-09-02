@@ -5,13 +5,41 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import codex_agent_terminal
 import codex_agent_worker
 
 
 class CodexAgentTerminalTests(unittest.TestCase):
+    @patch("codex_agent_worker.subprocess.Popen")
+    @patch("codex_agent_worker.shutil.which", return_value="/usr/bin/codex")
+    def test_worker_skips_git_check_for_bounded_non_git_workspace(self, _which: Mock, popen: Mock) -> None:
+        popen.return_value.wait.return_value = 0
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            workspace = base / "non-git-workspace"
+            workspace.mkdir()
+            self.assertFalse((workspace / ".git").exists())
+            agent_dir = base / "agent"
+            agent_dir.mkdir()
+            request_path = agent_dir / "request.json"
+            request_path.write_text(
+                json.dumps({"workspace": str(workspace), "mode": "workspace_write", "task": "Inspect files"}),
+                encoding="utf-8",
+            )
+            (agent_dir / "status.json").write_text(json.dumps({"status": "initializing"}), encoding="utf-8")
+
+            with patch("sys.argv", ["codex_agent_worker.py", str(request_path)]):
+                self.assertEqual(codex_agent_worker.main(), 0)
+
+        argv = popen.call_args.args[0]
+        self.assertEqual(argv[0:3], ["/usr/bin/codex", "exec", "--skip-git-repo-check"])
+        self.assertIn("workspace-write", argv)
+        self.assertIn('approval_policy="never"', argv)
+        self.assertEqual(popen.call_args.kwargs["cwd"], str(workspace))
+        self.assertFalse(popen.call_args.kwargs["shell"])
+
     def test_worker_extracts_session_id_from_bounded_event_stream(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             events = Path(tmpdir) / "events.jsonl"

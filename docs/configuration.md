@@ -28,8 +28,13 @@ Machine paths лишаються порожніми.
 
 Standalone MCP Context Servant також читає ignored `.env.local` і `.env`, але
 використовує тільки загальні параметри `ARVIS_MCP_*` та
-`ARVIS_SYSTEM_METRICS_STORAGE_PATH`. Реальні корені проєктів, storage target і
-локально вибраний профіль не належать до публічної конфігурації. Повний опис:
+`ARVIS_SYSTEM_METRICS_STORAGE_PATH`. Опційна safe-command integration також
+читає локальні `ARVIS_SAFE_COMMAND_*`; її config path і recipe policy не
+належать до tracked конфігурації. Вузький Safe Git adapter читає лише локальні
+`ARVIS_SAFE_GIT_*`: master opt-in, pinned remote name та exact URL, фіксовані
+public name/email і окремі opt-ins для push та history rewrite. Реальні
+значення цієї policy, корені проєктів, storage target і локально вибраний
+профіль не належать до публічної конфігурації. Повний опис:
 [`mcp_context_servant.md`](mcp_context_servant.md).
 
 `ARVIS_SYSTEM_METRICS_STORAGE_PATH` опційно вибирає один абсолютний filesystem

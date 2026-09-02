@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-from dotenv import load_dotenv
+from dotenv.main import DotEnv
+from dotenv.variables import parse_variables
 
 
 PROFILE_CODEX = "codex"
@@ -37,8 +38,60 @@ def load_local_mcp_environment(base_dir: Path | None = None) -> None:
     """Завантажити ignored локальні значення, не замінюючи явний env процесу."""
 
     root = (base_dir or Path(__file__).resolve().parent).resolve()
-    load_dotenv(root / ".env.local", override=False)
-    load_dotenv(root / ".env", override=False)
+    effective = read_local_mcp_environment(root, environ=os.environ)
+    for key, value in effective.items():
+        os.environ.setdefault(key, value)
+
+
+def read_local_mcp_environment(
+    base_dir: Path | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Return MCP startup dotenv values without mutating the process environment.
+
+    The order and ``override=False`` interpolation behavior intentionally match
+    :func:`load_local_mcp_environment`: explicit process values win, then
+    ``.env.local``, then ``.env``.
+    """
+
+    effective, _local_keys = read_local_mcp_environment_with_keys(
+        base_dir,
+        environ=environ,
+    )
+    return effective
+
+
+def read_local_mcp_environment_with_keys(
+    base_dir: Path | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> tuple[dict[str, str], frozenset[str]]:
+    """Return effective dotenv values plus keys declared in local dotenv files."""
+
+    root = (base_dir or Path(__file__).resolve().parent).resolve()
+    effective = dict(os.environ if environ is None else environ)
+    local_keys: set[str] = set()
+    for path in (root / ".env.local", root / ".env"):
+        resolved_in_file: dict[str, str | None] = {}
+        for key, raw_value in DotEnv(path, interpolate=False, override=False).parse():
+            local_keys.add(key)
+            if raw_value is None:
+                resolved_in_file[key] = None
+                continue
+            interpolation_env: dict[str, str | None] = dict(resolved_in_file)
+            interpolation_env.update(effective)
+            resolved_in_file[key] = "".join(
+                atom.resolve(interpolation_env) for atom in parse_variables(raw_value)
+            )
+        for key, value in resolved_in_file.items():
+            if value is not None:
+                effective.setdefault(key, value)
+            elif key == WRITABLE_ROOTS_ENV:
+                # Unlike an absent variable, a bare writable-roots declaration
+                # is an explicit malformed restriction and must survive parsing.
+                effective.setdefault(key, "")
+    return effective, frozenset(local_keys)
 
 
 def load_mcp_access_config(
@@ -60,8 +113,24 @@ def load_mcp_access_config(
         )
 
     configured_allowed = _parse_allowed_roots(env.get(ALLOWED_ROOTS_ENV), working_directory)
-    configured_writable = _parse_allowed_roots(env.get(WRITABLE_ROOTS_ENV), working_directory)
+    writable_was_configured = WRITABLE_ROOTS_ENV in env
+    raw_writable = env.get(WRITABLE_ROOTS_ENV)
+    configured_writable = _parse_allowed_roots(raw_writable, working_directory)
     configured_default = _resolve_configured_path(env.get(PROJECT_ROOT_ENV), working_directory)
+
+    if writable_was_configured and not _configured_roots_are_valid(
+        raw_writable,
+        working_directory,
+    ):
+        return McpAccessConfig(
+            profile=profile,
+            allowed_roots=configured_allowed,
+            writable_roots=(),
+            default_root=None,
+            configuration_error=(
+                "Явний список writable MCP roots порожній або містить некоректний шлях."
+            ),
+        )
 
     if profile == PROFILE_CHATGPT and not configured_allowed:
         return McpAccessConfig(
@@ -129,7 +198,7 @@ def path_is_within(candidate: Path, root: Path) -> bool:
 
 
 def _parse_allowed_roots(value: str | None, cwd: Path) -> tuple[Path, ...]:
-    if not value or not value.strip():
+    if not isinstance(value, str) or not value.strip():
         return ()
 
     roots: list[Path] = []
@@ -140,15 +209,31 @@ def _parse_allowed_roots(value: str | None, cwd: Path) -> tuple[Path, ...]:
     return tuple(roots)
 
 
+def _configured_roots_are_valid(value: str | None, cwd: Path) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    items = value.split(os.pathsep)
+    for item in items:
+        if not item.strip():
+            return False
+        resolved = _resolve_configured_path(item, cwd)
+        try:
+            if resolved is None or not resolved.is_dir():
+                return False
+        except (OSError, RuntimeError, ValueError):
+            return False
+    return True
+
+
 def _resolve_configured_path(value: str | None, cwd: Path) -> Path | None:
-    if not value or not value.strip():
+    if not isinstance(value, str) or not value.strip():
         return None
     path = Path(value.strip()).expanduser()
     if not path.is_absolute():
         path = cwd / path
     try:
         return path.resolve()
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         return None
 
 

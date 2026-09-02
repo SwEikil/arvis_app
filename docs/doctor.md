@@ -28,6 +28,8 @@ python main.py doctor --no-color
 - Python 3.11+ і core project files.
 - Required Python packages та imports.
 - `.env`, `.env.example`, відомі keys і safe placeholder values.
+- Safe Git master/push/rewrite opt-ins та повнота trusted local policy без
+  показу remote URL, public identity чи інших локальних значень.
 - Secret/path redaction і gitignore coverage.
 - Ollama URL/readiness.
 - Optional voice configuration/dependencies.
@@ -38,6 +40,17 @@ python main.py doctor --no-color
 
 Doctor не вимагає, щоб optional Ollama, microphone, browser, apps або Minecraft
 server були запущені для загального success.
+
+Doctor не запускає Safe Git preflight, stage, commit, push або rewrite. Якщо
+master control увімкнено з неповною чи некоректною policy, перевірка має статус
+`FAIL`; history rewrite opt-in показується як `WARN`. Вимкнена integration має
+статус `INFO`.
+
+Для ignored `.env.local` і `.env` Doctor використовує той самий shared
+`python-dotenv` parser, precedence та interpolation contract, що й MCP startup.
+Отже `export`, quoted values, multiline syntax і `${NAME}` expansion
+інтерпретуються однаково; діагностика будує окремий mapping і не змінює process
+environment.
 
 ## Status і exit codes
 

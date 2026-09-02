@@ -169,6 +169,102 @@ class DoctorTests(unittest.TestCase):
 
         self.assertFalse(any(check.title == "Unknown local env keys are present" for check in checks))
 
+    def test_safe_command_settings_are_known_env_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / ".env.example").write_text(
+                "# ARVIS_SAFE_COMMAND_CONTROL_ENABLED=false\n",
+                encoding="utf-8",
+            )
+
+            checks = doctor.check_local_config(
+                root,
+                {
+                    "ARVIS_SAFE_COMMAND_CONTROL_ENABLED": "false",
+                    "ARVIS_SAFE_COMMAND_CONFIG": "/absolute/path/to/safe-commands.json",
+                    "ARVIS_SAFE_COMMAND_HOST_CONTROL_ENABLED": "false",
+                },
+                doctor.DoctorOptions(verbose=True),
+            )
+
+        self.assertFalse(any(check.title == "Unknown local env keys are present" for check in checks))
+
+    def test_safe_git_settings_are_known_and_valid_policy_values_stay_private(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / ".env.example").write_text(
+                "# ARVIS_SAFE_GIT_CONTROL_ENABLED=false\n",
+                encoding="utf-8",
+            )
+            private_values = {
+                "ARVIS_MCP_WRITABLE_ROOTS": str(root),
+                "ARVIS_SAFE_GIT_CONTROL_ENABLED": "true",
+                "ARVIS_SAFE_GIT_REMOTE_NAME": "private-remote",
+                "ARVIS_SAFE_GIT_EXPECTED_REMOTE_URL": "https://private.example.invalid/team/project.git",
+                "ARVIS_SAFE_GIT_PUBLIC_NAME": "Private Local Name",
+                "ARVIS_SAFE_GIT_PUBLIC_EMAIL": "private@example.invalid",
+                "ARVIS_SAFE_GIT_PUSH_ENABLED": "true",
+                "ARVIS_SAFE_GIT_HISTORY_REWRITE_ENABLED": "false",
+            }
+
+            checks = doctor.check_local_config(
+                root,
+                private_values,
+                doctor.DoctorOptions(verbose=True),
+            )
+
+        self.assertFalse(any(check.title == "Unknown local env keys are present" for check in checks))
+        self.assertTrue(
+            any(check.category == "Safe Git" and check.title.endswith("policy is valid") for check in checks)
+        )
+        rendered = repr(checks)
+        for key in (
+            "ARVIS_SAFE_GIT_REMOTE_NAME",
+            "ARVIS_SAFE_GIT_EXPECTED_REMOTE_URL",
+            "ARVIS_SAFE_GIT_PUBLIC_NAME",
+            "ARVIS_SAFE_GIT_PUBLIC_EMAIL",
+        ):
+            self.assertNotIn(private_values[key], rendered)
+
+    def test_safe_git_enabled_with_invalid_or_incomplete_policy_fails_closed(self) -> None:
+        cases = (
+            {"ARVIS_SAFE_GIT_CONTROL_ENABLED": "true"},
+            {
+                "ARVIS_SAFE_GIT_CONTROL_ENABLED": "true",
+                "ARVIS_SAFE_GIT_REMOTE_NAME": "private-remote",
+                "ARVIS_SAFE_GIT_EXPECTED_REMOTE_URL": "https://private.example.invalid/project.git",
+                "ARVIS_SAFE_GIT_PUBLIC_NAME": "Private Local Name",
+                "ARVIS_SAFE_GIT_PUBLIC_EMAIL": "private@example.invalid",
+                "ARVIS_SAFE_GIT_PUSH_ENABLED": "sometimes",
+            },
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / ".env.example").write_text(
+                "# ARVIS_SAFE_GIT_CONTROL_ENABLED=false\n",
+                encoding="utf-8",
+            )
+            for env in cases:
+                with self.subTest(keys=sorted(env)):
+                    checks = doctor.check_local_config(root, env, doctor.DoctorOptions())
+                    safe_git_checks = [check for check in checks if check.category == "Safe Git"]
+                    self.assertEqual(len(safe_git_checks), 1)
+                    self.assertEqual(safe_git_checks[0].status, "fail")
+                    self.assertNotIn("private.example.invalid", repr(safe_git_checks))
+
+    def test_safe_git_invalid_master_flag_warns_and_stays_disabled(self) -> None:
+        checks = doctor._check_safe_git_config(
+            {
+                "ARVIS_SAFE_GIT_CONTROL_ENABLED": "yes",
+                "ARVIS_SAFE_GIT_PUSH_ENABLED": "true",
+                "ARVIS_SAFE_GIT_HISTORY_REWRITE_ENABLED": "true",
+            }
+        )
+
+        self.assertEqual(len(checks), 1)
+        self.assertEqual(checks[0].status, "warn")
+        self.assertIn("remains disabled", checks[0].title)
+
     def test_system_metrics_storage_setting_is_known_and_path_stays_private(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -210,6 +306,89 @@ class DoctorTests(unittest.TestCase):
             env["ARVIS_SYSTEM_METRICS_STORAGE_PATH"],
             "/configured/from-env-local",
         )
+
+    def test_doctor_preserves_unknown_local_keys_without_reporting_host_only_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / ".env").write_text(
+                "ARVIS_MODEL=arvis\nUNKNOWN_LOCAL_SETTING=present\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {"PATH": os.environ.get("PATH", ""), "HOST_ONLY_UNKNOWN": "ignored"},
+                clear=True,
+            ):
+                env = doctor._load_doctor_environment(root)
+                checks = doctor.check_local_config(
+                    root,
+                    env,
+                    doctor.DoctorOptions(verbose=True),
+                )
+
+        unknown = next(
+            check for check in checks if check.title == "Unknown local env keys are present"
+        )
+        self.assertIn("UNKNOWN_LOCAL_SETTING", unknown.details)
+        self.assertNotIn("HOST_ONLY_UNKNOWN", unknown.details)
+
+    def test_doctor_uses_mcp_dotenv_export_quoting_and_interpolation_without_env_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / ".env").write_text(
+                "\n".join(
+                    (
+                        "DOTENV_USER=public-contributor",
+                        "export ARVIS_SAFE_GIT_CONTROL_ENABLED=\"true\"",
+                        "ARVIS_SAFE_GIT_REMOTE_NAME='origin'",
+                        "ARVIS_SAFE_GIT_EXPECTED_REMOTE_URL=\"https://github.com/example/arvis.git\"",
+                        "ARVIS_SAFE_GIT_PUBLIC_NAME='Quoted Public Name'",
+                        "ARVIS_SAFE_GIT_PUBLIC_EMAIL=${DOTENV_USER}@example.invalid",
+                        "ARVIS_SAFE_GIT_PUSH_ENABLED=false",
+                        "export ARVIS_SAFE_GIT_HISTORY_REWRITE_ENABLED='true'",
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {}, clear=True):
+                before = dict(os.environ)
+                env = doctor._load_doctor_environment(root)
+                after = dict(os.environ)
+
+        self.assertEqual(before, after)
+        self.assertEqual(env["ARVIS_SAFE_GIT_CONTROL_ENABLED"], "true")
+        self.assertEqual(env["ARVIS_SAFE_GIT_PUBLIC_NAME"], "Quoted Public Name")
+        self.assertEqual(
+            env["ARVIS_SAFE_GIT_PUBLIC_EMAIL"],
+            "public-contributor@example.invalid",
+        )
+        checks = doctor._check_safe_git_config(env)
+        self.assertTrue(any(check.status == "warn" and "rewrite" in check.title for check in checks))
+
+    def test_doctor_dotenv_interpolation_does_not_read_unprovided_host_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / ".env").write_text(
+                "ARVIS_MODEL=${PRIVATE_HOST_VALUE}\n",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {"PRIVATE_HOST_VALUE": "must-not-leak", "UNCHANGED": "host"},
+                clear=True,
+            ):
+                before = dict(os.environ)
+                from mcp_access import read_local_mcp_environment
+
+                effective = read_local_mcp_environment(root, environ={})
+                after = dict(os.environ)
+
+        self.assertEqual(before, after)
+        self.assertEqual(effective["ARVIS_MODEL"], "")
+        self.assertNotIn("PRIVATE_HOST_VALUE", effective)
 
     def test_fix_does_not_overwrite_existing_file_at_safe_dir_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
